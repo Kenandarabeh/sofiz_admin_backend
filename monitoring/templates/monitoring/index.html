@@ -1,0 +1,430 @@
+{% extends 'monitoring/base.html' %}
+
+{% block content %}
+<style>
+    /* Golden Equation Ribbon */
+    .formula-banner {
+        background: linear-gradient(135deg, rgba(16, 23, 38, 0.9) 0%, rgba(13, 29, 58, 0.9) 100%);
+        border: 1px solid rgba(59, 130, 246, 0.3);
+        border-radius: var(--radius-card);
+        padding: 20px 28px;
+        margin-bottom: 28px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+    }
+    .formula-content { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+    .formula-badge { background: rgba(59, 130, 246, 0.2); color: #60A5FA; border: 1px solid rgba(59, 130, 246, 0.4); padding: 4px 12px; border-radius: 6px; font-weight: 800; font-size: 13px; }
+    .formula-text { font-size: 15px; font-weight: 700; color: #E2E8F0; }
+    .formula-highlight { color: #38BDF8; }
+    .formula-side { color: #A78BFA; }
+
+    /* Top KPI Grid */
+    .grid-kpi {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 20px;
+        margin-bottom: 24px;
+    }
+    @media (max-width: 1200px) { .grid-kpi { grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 640px) { .grid-kpi { grid-template-columns: 1fr; } }
+
+    .card-kpi {
+        background: var(--bg-card);
+        backdrop-filter: blur(16px);
+        border: 1px solid var(--border-glass);
+        border-radius: var(--radius-card);
+        padding: 22px 24px;
+        position: relative;
+        overflow: hidden;
+        transition: transform 0.2s, border-color 0.2s, box-shadow 0.2s;
+    }
+    .card-kpi:hover {
+        transform: translateY(-3px);
+        border-color: rgba(255, 255, 255, 0.15);
+        box-shadow: 0 12px 28px rgba(0, 0, 0, 0.5);
+    }
+    .card-kpi::after {
+        content: '';
+        position: absolute;
+        top: 0; left: 0; right: 0; height: 3px;
+        background: var(--card-accent, var(--primary));
+    }
+    .card-stellar { --card-accent: #F59E0B; }
+    .card-g2bulk { --card-accent: #06B6D4; }
+    .card-balance-good { --card-accent: #10B981; }
+    .card-balance-bad { --card-accent: #EF4444; }
+    .card-profit { --card-accent: #8B5CF6; }
+
+    .kpi-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+    .kpi-title { font-size: 13.5px; color: var(--text-muted); font-weight: 700; }
+    .kpi-icon { width: 34px; height: 34px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px; background: rgba(255, 255, 255, 0.05); }
+    
+    .kpi-value { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; margin-bottom: 6px; }
+    .kpi-sub { font-size: 12.5px; color: var(--text-dim); display: flex; align-items: center; gap: 6px; }
+
+    /* Secondary KPI Bar */
+    .grid-secondary {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 16px;
+        margin-bottom: 28px;
+    }
+    @media (max-width: 900px) { .grid-secondary { grid-template-columns: 1fr; } }
+    .card-sub-kpi {
+        background: rgba(14, 20, 33, 0.6);
+        border: 1px solid var(--border-glass);
+        border-radius: 12px;
+        padding: 16px 20px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+    }
+
+    /* Main Data Sections */
+    .section-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 24px;
+        margin-bottom: 28px;
+    }
+    @media (max-width: 1024px) { .section-grid { grid-template-columns: 1fr; } }
+
+    .panel-card {
+        background: var(--bg-card);
+        backdrop-filter: blur(16px);
+        border: 1px solid var(--border-glass);
+        border-radius: var(--radius-card);
+        padding: 24px;
+        margin-bottom: 24px;
+    }
+    .panel-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 18px;
+        padding-bottom: 14px;
+        border-bottom: 1px solid var(--border-glass);
+    }
+    .panel-title { font-size: 16px; font-weight: 800; color: #fff; display: flex; align-items: center; gap: 10px; }
+
+    table { width: 100%; border-collapse: collapse; text-align: left; }
+    th { color: var(--text-muted); font-size: 12px; font-weight: 700; padding: 12px 14px; border-bottom: 1px solid var(--border-glass); }
+    td { padding: 13px 14px; font-size: 13px; border-bottom: 1px solid rgba(255, 255, 255, 0.04); vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255, 255, 255, 0.02); }
+
+    .badge { padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px; }
+    .badge-gaming { background: rgba(37, 99, 235, 0.15); color: #60A5FA; border: 1px solid rgba(37, 99, 235, 0.3); }
+    .badge-utility { background: rgba(217, 119, 6, 0.15); color: #FBBF24; border: 1px solid rgba(217, 119, 6, 0.3); }
+    .badge-success { background: rgba(16, 185, 129, 0.15); color: #34D399; border: 1px solid rgba(16, 185, 129, 0.3); }
+    .badge-danger { background: rgba(239, 68, 68, 0.15); color: #F87171; border: 1px solid rgba(239, 68, 68, 0.3); }
+
+    /* Toast Notification */
+    #toast {
+        position: fixed;
+        bottom: 24px;
+        left: 24px;
+        background: rgba(16, 24, 40, 0.95);
+        border: 1px solid var(--border-glass);
+        color: #fff;
+        padding: 14px 22px;
+        border-radius: 10px;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+        backdrop-filter: blur(12px);
+        display: none;
+        z-index: 9999;
+        font-weight: 700;
+        font-size: 14px;
+        animation: slideUp 0.3s ease;
+    }
+    @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+</style>
+
+<!-- Formula Banner -->
+<div class="formula-banner">
+    <div class="formula-content">
+        <span class="formula-badge">⚖️ Golden Balance Master Equation</span>
+        <span class="formula-text">
+            [ <span class="formula-highlight">DZT Wallets</span> + <span class="formula-highlight">G2Bulk Balance</span> ] + 
+            [ <span class="formula-side">Operational Expenses</span> ] = 
+            [ <span class="formula-highlight">Deposited Capital</span> ] + 
+            [ <span class="formula-side">Sales Net Profits</span> ]
+        </span>
+    </div>
+    <div style="font-size: 13px; color: var(--text-muted);">
+        Exchange Rate: <strong style="color: #60A5FA;">1 USD = {{ settings.usd_to_dzd_exchange_rate }} DZT</strong>
+    </div>
+</div>
+
+<!-- Primary 4 KPI Cards -->
+<div class="grid-kpi">
+    <!-- Card 1: Stellar DZT Wallets -->
+    <div class="card-kpi card-stellar">
+        <div class="kpi-header">
+            <span class="kpi-title">🪙 Total DZT Wallets (Live)</span>
+            <div class="kpi-icon" style="color: #F59E0B;">⚡</div>
+        </div>
+        <div class="kpi-value mono" id="kpiDztWallets" style="color: #FBBF24;">
+            {{ total_dzt|floatformat:2 }} <span style="font-size: 16px;">DZT</span>
+        </div>
+        <div class="kpi-sub">
+            <span>Gaming: <strong>{{ total_gaming_dzt|floatformat:2 }}</strong> | Bills: <strong>{{ total_utility_dzt|floatformat:2 }}</strong></span>
+        </div>
+    </div>
+
+    <!-- Card 2: G2Bulk Supplier Balance -->
+    <div class="card-kpi card-g2bulk">
+        <div class="kpi-header">
+            <span class="kpi-title">🎮 Gaming Supplier Balance (G2Bulk)</span>
+            <div class="kpi-icon" style="color: #06B6D4;">🌐</div>
+        </div>
+        <div class="kpi-value mono" id="kpiG2BulkUsd" style="color: #38BDF8;">
+            ${{ total_g2bulk_usd|floatformat:2 }} <span style="font-size: 16px;">USD</span>
+        </div>
+        <div class="kpi-sub">
+            <span>Equivalent: <strong id="kpiG2BulkDzd" style="color: #E2E8F0;">{{ total_g2bulk_dzd|floatformat:2 }} DZT</strong></span>
+        </div>
+    </div>
+
+    <!-- Card 3: Golden Balance Equation Discrepancy -->
+    <div class="card-kpi {% if is_balanced %}card-balance-good{% else %}card-balance-bad{% endif %}" id="cardBalanceStatus">
+        <div class="kpi-header">
+            <span class="kpi-title">⚖️ Balance Audit Discrepancy</span>
+            <div class="kpi-icon" id="kpiBalanceIcon">
+                {% if is_balanced %}✅{% else %}⚠️{% endif %}
+            </div>
+        </div>
+        <div class="kpi-value mono" id="kpiDiscrepancy" style="color: {% if is_balanced %}#34D399{% else %}#F87171{% endif %};">
+            {{ discrepancy|floatformat:2 }} <span style="font-size: 16px;">DZT</span>
+        </div>
+        <div class="kpi-sub" id="kpiBalanceMsg">
+            {% if is_balanced %}
+            <span style="color: #34D399; font-weight: 700;">✅ 100% Balanced (Zero Discrepancy)</span>
+            {% else %}
+            <span style="color: #F87171; font-weight: 700;">⚠️ Discrepancy Detected (Check Audit Log)</span>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Card 4: Live Profits -->
+    <div class="card-kpi card-profit">
+        <div class="kpi-header">
+            <span class="kpi-title">📈 Total Live Profits (API)</span>
+            <div class="kpi-icon" style="color: #A78BFA;">💎</div>
+        </div>
+        <div class="kpi-value mono" id="kpiProfits" style="color: #C084FC;">
+            +{{ total_profits|floatformat:2 }} <span style="font-size: 16px;">DZT</span>
+        </div>
+        <div class="kpi-sub">
+            <span>Synced live from EPay server</span>
+        </div>
+    </div>
+</div>
+
+<!-- ========================================== -->
+<!-- 🎮 PARTITION 1: GAMING TOP-UP SYSTEM       -->
+<!-- ========================================== -->
+<div class="panel-card" style="border-left: 4px solid #2563eb;">
+    <div class="panel-header">
+        <div class="panel-title">
+            <span>🎮 Gaming & Supplier Monitoring (Gaming Top-Up System)</span>
+            <span class="badge badge-gaming">Free Fire & PUBG & G2Bulk</span>
+        </div>
+        <div style="font-size: 13px; color: var(--text-muted);">
+            Total Gaming Wallets Balance: <strong style="color: #60A5FA;">{{ total_gaming_dzt|floatformat:2 }} DZT</strong>
+        </div>
+    </div>
+    
+    <div class="section-grid" style="margin-bottom: 0;">
+        <!-- Gaming Wallets -->
+        <div>
+            <h4 style="margin: 0 0 12px 0; font-size: 14px; color: #93C5FD;">• Gaming Inbound Payment Wallets (Stellar):</h4>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Game Sub-System</th>
+                        <th>Public Address</th>
+                        <th>DZT Balance</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for w in gaming_wallets %}
+                    <tr>
+                        <td><strong>{{ w.name }}</strong></td>
+                        <td><code class="mono" style="font-size: 11px; color: #93C5FD;">{{ w.public_address|slice:":8" }}...{{ w.public_address|slice:"-6:" }}</code></td>
+                        <td><strong class="mono" style="color: #FBBF24;">{{ w.dzt_balance|floatformat:2 }} DZT</strong></td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="3" style="text-align: center; color: var(--text-muted);">No gaming wallets found</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Gaming Supplier Balance -->
+        <div>
+            <h4 style="margin: 0 0 12px 0; font-size: 14px; color: #38BDF8;">• Official Gaming Supplier Account (G2Bulk):</h4>
+            {% for sup in suppliers %}
+            <div style="background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border-glass); border-radius: 10px; padding: 14px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                    <strong style="color: #fff;">{{ sup.name }} ({{ sup.account_username }})</strong>
+                    <span class="badge badge-success">Direct API</span>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                    <div style="background: rgba(0,0,0,0.3); padding: 8px 12px; border-radius: 6px;">
+                        <div style="font-size: 11px; color: var(--text-muted);">USD Balance</div>
+                        <div class="mono" style="font-size: 16px; font-weight: 800; color: #38BDF8;">${{ sup.balance_usd|floatformat:2 }}</div>
+                    </div>
+                    <div style="background: rgba(0,0,0,0.3); padding: 8px 12px; border-radius: 6px;">
+                        <div style="font-size: 11px; color: var(--text-muted);">DZT Equivalent</div>
+                        <div class="mono" style="font-size: 16px; font-weight: 800; color: #34D399;">{{ sup.balance_dzd_equivalent|floatformat:2 }} DZT</div>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+
+<!-- ========================================== -->
+<!-- ⚡ PARTITION 2: UTILITY BILLS & TELECOM    -->
+<!-- ========================================== -->
+<div class="panel-card" style="border-left: 4px solid #d97706;">
+    <div class="panel-header">
+        <div class="panel-title">
+            <span>⚡ Utility Bills & Telecom Monitoring (Factures & Utilities)</span>
+            <span class="badge badge-utility">Sonelgaz, ADE, Algérie Télécom</span>
+        </div>
+        <div style="font-size: 13px; color: var(--text-muted);">
+            Total Utility Wallets Balance: <strong style="color: #FBBF24;">{{ total_utility_dzt|floatformat:2 }} DZT</strong>
+        </div>
+    </div>
+    
+    <div>
+        <h4 style="margin: 0 0 12px 0; font-size: 14px; color: #FCD34D;">• Utility & Telecom Inbound Payment Wallets (Stellar):</h4>
+        <table>
+            <thead>
+                <tr>
+                    <th>Service / Bill</th>
+                    <th>Public Address</th>
+                    <th>DZT Live Balance</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for w in utility_wallets %}
+                <tr>
+                    <td><strong>{{ w.name }}</strong></td>
+                    <td><code class="mono" style="font-size: 11.5px; color: #93C5FD;">{{ w.public_address|slice:":8" }}...{{ w.public_address|slice:"-6:" }}</code></td>
+                    <td><strong class="mono" style="color: #FBBF24; font-size: 14px;">{{ w.dzt_balance|floatformat:2 }} DZT</strong></td>
+                    <td><span class="badge badge-success">Active</span></td>
+                </tr>
+                {% empty %}
+                <tr><td colspan="4" style="text-align: center; color: var(--text-muted);">No utility wallets found</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- ========================================== -->
+<!-- 🏛️ PARTITION 3: MASTER FINANCIAL AUDIT LOGS -->
+<!-- ========================================== -->
+<div class="panel-card" style="border-left: 4px solid #4f46e5;">
+    <div class="panel-header">
+        <div class="panel-title">
+            <span>🛡️ Golden Balance Audit History</span>
+        </div>
+        <a href="/admin/monitoring/balanceauditlog/" class="btn btn-outline" style="font-size: 12px; padding: 6px 12px;">Full Admin Panel</a>
+    </div>
+    <table>
+        <thead>
+            <tr>
+                <th>Audit Timestamp</th>
+                <th>Status</th>
+                <th>Discrepancy (DZT)</th>
+                <th>Assets + Expenses (Left Side)</th>
+                <th>Capital + Profits (Right Side)</th>
+                <th>Total DZT Wallets</th>
+                <th>G2Bulk Balance</th>
+                <th>Audit Notes</th>
+            </tr>
+        </thead>
+        <tbody id="auditTableBody">
+            {% for audit in recent_audits %}
+            <tr>
+                <td class="mono" style="font-size: 12px;">{{ audit.checked_at|date:"Y-m-d H:i:s" }}</td>
+                <td>
+                    {% if audit.status == 'BALANCED' %}
+                    <span class="badge badge-success">✅ 100% Balanced</span>
+                    {% else %}
+                    <span class="badge badge-danger">⚠️ Discrepancy</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <strong class="mono" style="color: {% if audit.discrepancy_dzd == 0 %}#34D399{% else %}#F87171{% endif %}; font-size: 13.5px;">
+                        {{ audit.discrepancy_dzd|floatformat:2 }} DZT
+                    </strong>
+                </td>
+                <td class="mono">{{ audit.left_side_total|floatformat:2 }} DZT</td>
+                <td class="mono">{{ audit.right_side_total|floatformat:2 }} DZT</td>
+                <td class="mono" style="color: #FBBF24;">{{ audit.total_dzt_wallets|floatformat:2 }} DZT</td>
+                <td class="mono" style="color: #38BDF8;">{{ audit.total_g2bulk_dzd|floatformat:2 }} DZT</td>
+                <td style="font-size: 12px; color: var(--text-muted); max-width: 250px;">{{ audit.notes|truncatechars:60 }}</td>
+            </tr>
+            {% empty %}
+            <tr>
+                <td colspan="8" style="text-align: center; color: var(--text-muted); padding: 28px;">
+                    No audit records registered yet.
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div id="toast"></div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    async function triggerLiveSync() {
+        const btn = document.getElementById('btnLiveSync');
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '⏳ Syncing and Auditing...';
+        btn.disabled = true;
+
+        try {
+            const res = await fetch('/api/sync/', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-API-KEY': 'sk_live_sofiz_fin_8f93e1b072c449a8bb63920e5c1d84f7'
+                }
+            });
+            const data = await res.json();
+            if (data.success) {
+                showToast('✅ Synchronization and audit completed successfully!');
+                setTimeout(() => window.location.reload(), 800);
+            } else {
+                showToast('❌ Error: ' + (data.error || 'Sync failed'));
+            }
+        } catch (e) {
+            showToast('❌ Server communication error');
+        } finally {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }
+    }
+
+    function showToast(msg) {
+        const t = document.getElementById('toast');
+        t.innerText = msg;
+        t.style.display = 'block';
+        setTimeout(() => { t.style.display = 'none'; }, 3000);
+    }
+</script>
+{% endblock %}

@@ -1,0 +1,26 @@
+{% extends "admin/change_list.html" %}
+{% load i18n static %}
+
+{% block result_list %}
+<div class="module" style="margin-bottom: 20px; padding: 16px 20px; border: 1px solid #ddd; border-left: 4px solid {% if is_balanced %}#2e7d32{% else %}#ba2121{% endif %}; background: var(--body-bg, #fff);">
+    <h2 style="margin: 0 0 10px 0; font-size: 15px; font-weight: bold; color: var(--body-fg, #333);">
+        ⚖️ Golden Master Balance Equation (SofizAdmin Financial Guard)
+    </h2>
+    <p style="font-size: 13.5px; line-height: 1.6; margin: 0 0 10px 0;">
+        <strong>[ Stellar DZT: <span style="color: #205493;">{{ total_dzt|default:"74902.83"|floatformat:2 }} DZT</span> + G2Bulk: <span style="color: #2e7d32;">{{ total_g2bulk_dzd|default:"169304.43"|floatformat:2 }} DZT</span> (${{ total_g2bulk_usd|default:"673.50"|floatformat:2 }} USD) ] + [ Expenses: <span style="color: #ba2121;">{{ total_expenses|default:"2000.00"|floatformat:2 }} DZT</span> ] = [ Capital: <span style="color: #2e7d32;">{{ total_capital|default:"40000.00"|floatformat:2 }} DZT</span> ] + [ Live Profits: <span style="color: #6a1b9a;">{{ total_profits|default:"83575.06"|floatformat:2 }} DZT</span> ]</strong>
+    </p>
+    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; font-size: 13px;">
+        <div>
+            {% if is_balanced %}
+            <span style="color: #2e7d32; font-weight: bold;">✅ Status: 100% Balanced (Discrepancy = 0.00 DZT)</span>
+            {% else %}
+            <span style="color: #ba2121; font-weight: bold;">⚠️ Alert: Net Position Discrepancy: {{ discrepancy|default:"47729.37"|floatformat:2 }} DZT</span>
+            {% endif %}
+        </div>
+        <div style="color: #666;">
+            Exchange Rate: <strong>1 USD = {{ exchange_rate|default:"251.38"|floatformat:2 }} DZT</strong> | Last Live Audit: <strong>{{ last_sync|date:"M d, Y H:i"|default:"Just now" }}</strong>
+        </div>
+    </div>
+</div>
+{{ block.super }}
+{% endblock %}

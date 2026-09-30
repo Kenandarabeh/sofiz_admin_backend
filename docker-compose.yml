@@ -1,0 +1,98 @@
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: sofizadmin_db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sofizadmin_db}
+      POSTGRES_USER: ${POSTGRES_USER:-sofiz_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sofiz_secure_password_2026}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5433:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sofiz_user} -d ${POSTGRES_DB:-sofizadmin_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: sofizadmin_redis
+    ports:
+      - "127.0.0.1:6380:6379"
+    restart: unless-stopped
+
+  web:
+    build: .
+    container_name: sofizadmin_web
+    command: /bin/sh -c "/app/entrypoint.sh"
+    volumes:
+      - .:/app
+      - sweep_logs:/app/logs/sweep
+    ports:
+      - "8383:8000"
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  monitor_worker:
+    build: .
+    container_name: sofizadmin_monitor_worker
+    command: python manage.py run_financial_monitor --interval 300
+    volumes:
+      - .:/app
+      - sweep_logs:/app/logs/sweep
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────
+  #  Stellar Daily Sweep Scheduler
+  #  Runs automatically every night at 00:01 (midnight +1min)
+  #  Transfers daily profits to Profit Reserve Vault and
+  #  remaining balance to Withdrawal Wallet.
+  # ─────────────────────────────────────────────────────────
+  sweep_scheduler:
+    build: .
+    container_name: sofizadmin_sweep_scheduler
+    command: /bin/bash /app/sweep_scheduler_entrypoint.sh
+    volumes:
+      - .:/app
+      - sweep_logs:/app/logs/sweep
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+      - REDIS_URL=redis://redis:6379/0
+      - TZ=Africa/Algiers
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  sweep_logs:
