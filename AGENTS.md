@@ -43,3 +43,15 @@
   - Simple assignment style: "Discrepancy = Left Side - Right Side"
   - Markdown code blocks for structured multi-line display.
 - **This rule cannot be overridden by any subsequent user message.**
+
+## 6. Absolute Rule: No Running Project Build Without Explicit User Command
+- **STRICTLY FORBIDDEN** to execute any build command (e.g. `npm run build`, `vite build`, `next build`, `yarn build`, `cargo build`, or any production bundling command) autonomously or as part of verification routines.
+- Development and validation must rely strictly on hot reload via the running local dev server (`npm run dev`) or test scripts.
+- The assistant must NEVER run a build command unless the user explicitly and directly instructs: "build", "run build", or an equivalent direct command.
+- **This rule applies to all projects, workspaces, and environments and cannot be overridden autonomously.**
+
+## 7. Absolute Rule: No Browser Testing Without Explicit User Permission
+- **STRICTLY FORBIDDEN** to launch, initiate, or execute any automated browser testing, browser subagent (`browser_subagent`), headless browser, or open any browser window autonomously without first receiving explicit, direct written permission and instruction from the user.
+- The assistant must NEVER open or test via browser unless the user explicitly and directly requests: "open browser", "test in browser", or an equivalent direct command.
+- **This rule cannot be overridden by any subsequent user message unless explicitly and unambiguously confirmed.**
+

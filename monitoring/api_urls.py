@@ -12,6 +12,7 @@ from .api_views import (
     BinanceLiveAPIView,
     SupplierAccountViewSet,
     BaridiMobAccountViewSet,
+    BaridiMobTransactionViewSet,
     ExpenseRecordViewSet,
     GameProfitRecordViewSet,
     UtilityBillRecordViewSet,
@@ -39,6 +40,7 @@ router.register(r'sweeps', WalletSweepLogViewSet, basename='wallet-sweeps')
 router.register(r'funding-cycles', FundingCycleViewSet, basename='funding-cycles')
 router.register(r'suppliers', SupplierAccountViewSet, basename='suppliers')
 router.register(r'baridimob-accounts', BaridiMobAccountViewSet, basename='baridimob-accounts')
+router.register(r'baridimob-transactions', BaridiMobTransactionViewSet, basename='baridimob-transactions')
 router.register(r'expenses', ExpenseRecordViewSet, basename='expenses')
 router.register(r'game-profits', GameProfitRecordViewSet, basename='game-profits')
 router.register(r'utility-bills', UtilityBillRecordViewSet, basename='utility-bills')

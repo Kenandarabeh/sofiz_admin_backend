@@ -22,7 +22,7 @@ class EpaySyncService:
         api_key = (
             global_settings.epay_api_key or
             os.getenv("MASTER_ADMIN_API_KEY") or
-            os.getenv("SOFIZPAY_ADMIN_API_KEY", "sk_live_sofiz_fin_8f93e1b072c449a8bb63920e5c1d84f7")
+            os.getenv("SOFIZPAY_ADMIN_API_KEY", "sk_sofizadmin_live_52041594509c51cd5cda405b244d9b703e684225473e63164ab614c681de7779")
         )
         return api_url.rstrip('/'), api_key.strip()
 
@@ -32,7 +32,7 @@ class EpaySyncService:
         keys = [
             primary_key,
             os.getenv("MASTER_ADMIN_API_KEY"),
-            "sk_live_sofiz_fin_8f93e1b072c449a8bb63920e5c1d84f7",
+            "sk_sofizadmin_live_52041594509c51cd5cda405b244d9b703e684225473e63164ab614c681de7779",
             "23a87961eca6be3443d760b38224c1007110bc46440d7259"
         ]
         seen = set()

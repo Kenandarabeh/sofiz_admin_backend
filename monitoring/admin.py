@@ -35,6 +35,7 @@ from .models import (
     SupplierAccount,
     SupplierProvider,
     BaridiMobAccount,
+    BaridiMobTransaction,
     GamingBaridiMobAccount,
     UtilityBaridiMobAccount,
     eSIMBaridiMobAccount,
@@ -337,6 +338,10 @@ class MonitoringGlobalSettingsAdmin(admin.ModelAdmin):
         ('BaridiMob API Credentials', {
             'fields': ('baridimob_secret_token', 'baridimob_device_id')
         }),
+        ('BaridiMob Operational Accounts Refill Thresholds', {
+            'fields': ('gaming_baridimob_min_threshold_dzd', 'utility_baridimob_min_threshold_dzd'),
+            'description': 'Configure the minimum DZD balance threshold below which an alert is triggered in the admin dashboard requiring working capital replenishment.'
+        }),
         ('Blockchain Node & Master Keys', {
             'fields': (
                 'master_admin_api_key',
@@ -354,6 +359,14 @@ class MonitoringGlobalSettingsAdmin(admin.ModelAdmin):
         if obj.g2bulk_min_threshold_usd:
             SupplierAccount.objects.filter(provider=SupplierProvider.G2BULK).update(
                 min_balance_threshold_usd=obj.g2bulk_min_threshold_usd
+            )
+        if obj.gaming_baridimob_min_threshold_dzd:
+            BaridiMobAccount.objects.filter(system_type=SubSystemType.GAMING).update(
+                min_balance_threshold_dzd=obj.gaming_baridimob_min_threshold_dzd
+            )
+        if obj.utility_baridimob_min_threshold_dzd:
+            BaridiMobAccount.objects.filter(system_type=SubSystemType.UTILITY).update(
+                min_balance_threshold_dzd=obj.utility_baridimob_min_threshold_dzd
             )
 
     @admin.display(description="Epay Exchange Rate (1 USD = X DZT)")
@@ -702,26 +715,6 @@ class GamingWithdrawalRecordAdmin(InstitutionalAuditAdminMixin, admin.ModelAdmin
     search_fields = ('title', 'p2p_order_id', 'binance_txid')
     actions = ['advance_to_p2p_action', 'advance_to_completed_action', 'verify_binance_action']
 
-    def has_module_permission(self, request):
-        if request.user and (request.user.username == 'sofiane_gaming' or request.user.groups.filter(name='Game Family Operator').exists()):
-            return False
-        return super().has_module_permission(request)
-
-    def has_add_permission(self, request):
-        if request.user and (request.user.username == 'sofiane_gaming' or request.user.groups.filter(name='Game Family Operator').exists()):
-            return False
-        return super().has_add_permission(request)
-
-    def has_change_permission(self, request, obj=None):
-        if request.user and (request.user.username == 'sofiane_gaming' or request.user.groups.filter(name='Game Family Operator').exists()):
-            return False
-        return super().has_change_permission(request, obj)
-
-    def has_delete_permission(self, request, obj=None):
-        if request.user and (request.user.username == 'sofiane_gaming' or request.user.groups.filter(name='Game Family Operator').exists()):
-            return False
-        return super().has_delete_permission(request, obj)
-
     def stage_badge(self, obj):
         if obj.stage == WithdrawalStage.COMPLETED:
             return format_html('<span style="background: #166534; color: #86efac; font-weight: bold; padding: 3px 8px; border-radius: 6px; font-size: 11px;">Stage 3: Completed</span>')
@@ -848,10 +841,16 @@ class UtilityFinancialStatusAdmin(admin.ModelAdmin):
 
 @admin.register(GamingBaridiMobAccount)
 class GamingBaridiMobAccountAdmin(InstitutionalAuditAdminMixin, admin.ModelAdmin):
-    list_display = ('account_name', 'rip_number', 'system_type', 'is_active', 'notes', 'created_at')
+    list_display = ('account_name', 'formatted_balance_dzd', 'min_balance_threshold_dzd', 'rip_number', 'system_type', 'is_active', 'notes', 'created_at')
     list_filter = ('is_active', 'system_type')
     search_fields = ('account_name', 'rip_number', 'notes')
-    fields = ('account_name', 'rip_number', 'system_type', 'is_active', 'notes')
+    fields = ('account_name', 'rip_number', 'system_type', 'min_balance_threshold_dzd', 'is_active', 'notes')
+
+    def formatted_balance_dzd(self, obj):
+        val = obj.balance_dzd or Decimal("0.00")
+        color = "#16a34a" if val >= obj.min_balance_threshold_dzd else "#dc2626"
+        return format_html('<span style="font-family: monospace; font-weight: bold; color: {}; font-size: 14px;">{} DZD</span>', color, f"{val:,.2f}")
+    formatted_balance_dzd.short_description = "Live Balance (DZD)"
 
     def get_changeform_initial_data(self, request):
         return {'system_type': SubSystemType.GAMING, 'is_active': True}
@@ -864,15 +863,16 @@ class GamingBaridiMobAccountAdmin(InstitutionalAuditAdminMixin, admin.ModelAdmin
 
 @admin.register(UtilityBaridiMobAccount)
 class UtilityBaridiMobAccountAdmin(InstitutionalAuditAdminMixin, admin.ModelAdmin):
-    list_display = ('account_name', 'formatted_balance_dzd', 'rip_number', 'system_type', 'is_active', 'last_synced_at')
+    list_display = ('account_name', 'formatted_balance_dzd', 'min_balance_threshold_dzd', 'rip_number', 'system_type', 'is_active', 'last_synced_at')
     list_filter = ('is_active', 'system_type')
     search_fields = ('account_name', 'rip_number', 'account_email', 'notes')
-    fields = ('account_name', 'rip_number', 'system_type', 'is_active', 'account_email', 'notes')
+    fields = ('account_name', 'rip_number', 'system_type', 'min_balance_threshold_dzd', 'is_active', 'account_email', 'notes')
     actions = ['sync_baridi_balance_action']
 
     def formatted_balance_dzd(self, obj):
         val = obj.balance_dzd or Decimal("0.00")
-        return format_html('<span style="font-family: monospace; font-weight: bold; color: #16a34a; font-size: 14px;">{} DZD</span>', f"{val:,.2f}")
+        color = "#16a34a" if val >= obj.min_balance_threshold_dzd else "#dc2626"
+        return format_html('<span style="font-family: monospace; font-weight: bold; color: {}; font-size: 14px;">{} DZD</span>', color, f"{val:,.2f}")
     formatted_balance_dzd.short_description = "Live Balance (DZD)"
 
     @admin.action(description="🔄 Sync Live BaridiMob (Sihaam 31) Balance")
@@ -910,15 +910,16 @@ class eSIMBaridiMobAccountAdmin(InstitutionalAuditAdminMixin, admin.ModelAdmin):
 
 @admin.register(BaridiMobAccount)
 class BaridiMobAccountAdmin(InstitutionalAuditAdminMixin, admin.ModelAdmin):
-    list_display = ('account_name', 'system_type', 'formatted_balance_dzd', 'rip_number', 'account_email', 'is_active', 'last_synced_at')
+    list_display = ('account_name', 'system_type', 'formatted_balance_dzd', 'min_balance_threshold_dzd', 'rip_number', 'account_email', 'is_active', 'last_synced_at')
     list_filter = ('system_type', 'is_active')
     search_fields = ('account_name', 'rip_number', 'account_email', 'notes')
-    fields = ('account_name', 'rip_number', 'system_type', 'is_active', 'account_email', 'notes')
+    fields = ('account_name', 'rip_number', 'system_type', 'min_balance_threshold_dzd', 'is_active', 'account_email', 'notes')
     actions = ['sync_baridi_balance_action']
 
     def formatted_balance_dzd(self, obj):
         val = obj.balance_dzd or Decimal("0.00")
-        return format_html('<span style="font-family: monospace; font-weight: bold; color: #16a34a; font-size: 14px;">{} DZD</span>', f"{val:,.2f}")
+        color = "#16a34a" if val >= obj.min_balance_threshold_dzd else "#dc2626"
+        return format_html('<span style="font-family: monospace; font-weight: bold; color: {}; font-size: 14px;">{} DZD</span>', color, f"{val:,.2f}")
     formatted_balance_dzd.short_description = "Live Balance (DZD)"
 
     @admin.action(description="🔄 Sync Live BaridiMob (Sihaam 31) Balance")
@@ -926,8 +927,43 @@ class BaridiMobAccountAdmin(InstitutionalAuditAdminMixin, admin.ModelAdmin):
         res = BaridiMobService.sync_baridi_balance()
         if res.get('success'):
             self.message_user(request, f"BaridiMob balance synced successfully: {res.get('balance_dzd'):,.2f} DZD")
-        else:
-            self.message_user(request, f"BaridiMob Sync Error: {res.get('error')}", level='ERROR')
+
+@admin.register(BaridiMobTransaction)
+class BaridiMobTransactionAdmin(admin.ModelAdmin):
+    list_display = (
+        'tid',
+        'account',
+        'formatted_amount',
+        'transaction_type',
+        'formatted_balance',
+        'transaction_date',
+        'ref_num',
+        'created_at',
+    )
+    list_filter = ('account', 'transaction_type', 'transaction_date')
+    search_fields = ('tid', 'ref_num', 'description', 'account__account_name')
+    date_hierarchy = 'transaction_date'
+    ordering = ('-transaction_date', '-created_at')
+    readonly_fields = [f.name for f in BaridiMobTransaction._meta.fields]
+
+    def formatted_amount(self, obj):
+        val = obj.amount or Decimal("0.00")
+        if val > 0:
+            return format_html('<span style="font-family: monospace; font-weight: bold; color: #16a34a;">+{} DZD</span>', f"{val:,.2f}")
+        return format_html('<span style="font-family: monospace; font-weight: bold; color: #dc2626;">{} DZD</span>', f"{val:,.2f}")
+    formatted_amount.short_description = "Amount (DZD)"
+
+    def formatted_balance(self, obj):
+        if obj.available_balance is not None:
+            return format_html('<span style="font-family: monospace; font-weight: bold; color: #0284c7;">{} DZD</span>', f"{obj.available_balance:,.2f}")
+        return "—"
+    formatted_balance.short_description = "Balance After Tx"
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(BaridiMobFundingReceipt)

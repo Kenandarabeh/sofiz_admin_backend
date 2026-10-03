@@ -160,14 +160,15 @@ class G2BulkService:
     def get_transactions(cls, transaction_type: str = None, limit: int = 100) -> dict:
         """
         Fetches recent transactions from G2Bulk API (/transactions?limit=...)
-        Optionally filters by transaction_type (e.g. 'add_balance' for deposits)
+        Optionally filters by transaction_type (e.g. 'add_balance' for deposits).
+        If 'add_balance' is requested, searches multiple recent pages to ensure deposits
+        aren't overshadowed by high-volume gaming customer charges.
         """
         try:
             global_settings = MonitoringGlobalSettings.get_settings()
             key = cls.get_api_key()
             endpoint_base = global_settings.g2bulk_base_url.rstrip('/')
             url = f"{endpoint_base}/transactions"
-            params = {"limit": limit}
 
             headers = {
                 "X-API-Key": key,
@@ -175,23 +176,38 @@ class G2BulkService:
                 "Accept": "application/json"
             }
 
+            all_transactions = []
+            max_pages = 5 if transaction_type == 'add_balance' else 1
+
             with httpx.Client(timeout=15.0) as client:
-                res = client.get(url, params=params, headers=headers)
-                if res.status_code == 200:
-                    data = res.json()
-                    transactions = data.get("data", [])
-                    if transaction_type:
-                        transactions = [t for t in transactions if t.get("transaction_type") == transaction_type]
-                    return {
-                        "success": True,
-                        "transactions": transactions,
-                        "total": len(transactions),
-                    }
-                return {
-                    "success": False,
-                    "error": f"HTTP {res.status_code}: {res.text}",
-                    "transactions": []
-                }
+                for page in range(1, max_pages + 1):
+                    params = {"limit": 100, "page": page}
+                    res = client.get(url, params=params, headers=headers)
+                    if res.status_code == 200:
+                        data = res.json()
+                        txs = data.get("data", [])
+                        if not txs:
+                            break
+                        all_transactions.extend(txs)
+                    else:
+                        break
+
+            if transaction_type == 'add_balance':
+                # Match both 'add_balance' and 'add balance'
+                filtered = [
+                    t for t in all_transactions
+                    if 'add' in str(t.get("transaction_type", "")).lower()
+                ]
+            elif transaction_type:
+                filtered = [t for t in all_transactions if t.get("transaction_type") == transaction_type]
+            else:
+                filtered = all_transactions[:limit]
+
+            return {
+                "success": True,
+                "transactions": filtered,
+                "total": len(filtered),
+            }
         except Exception as e:
             logger.error(f"Failed to fetch G2Bulk transactions: {e}")
             return {

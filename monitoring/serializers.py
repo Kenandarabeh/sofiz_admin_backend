@@ -12,6 +12,7 @@ from .models import (
     WalletSweepLog,
     SupplierAccount,
     BaridiMobAccount,
+    BaridiMobTransaction,
     CapitalEntry,
     WithdrawalRecord,
     BaridiMobFundingReceipt,
@@ -242,6 +243,34 @@ class BaridiMobAccountSerializer(serializers.ModelSerializer):
         }
 
 
+class BaridiMobTransactionSerializer(serializers.ModelSerializer):
+    account_name = serializers.ReadOnlyField(source='account.account_name')
+    account_system_type = serializers.ReadOnlyField(source='account.system_type')
+
+    class Meta:
+        model = BaridiMobTransaction
+        fields = [
+            'id',
+            'account',
+            'account_name',
+            'account_system_type',
+            'tid',
+            'ref_num',
+            'amount',
+            'fee_amount',
+            'transaction_type',
+            'operation_code',
+            'is_bank_fee',
+            'description',
+            'available_balance',
+            'transaction_date',
+            'raw_data',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
 class CapitalEntrySerializer(serializers.ModelSerializer):
     category_display = serializers.CharField(source='get_category_display', read_only=True)
     destination_wallet_name = serializers.ReadOnlyField(source='destination_wallet.name')
@@ -314,6 +343,8 @@ class WithdrawalRecordSerializer(serializers.ModelSerializer):
             'binance_txid',
             'p2p_order_id',
             'p2p_rate',
+            'binance_pay_id',
+            'g2bulk_transaction_id',
             'supplier_pay_id',
             'g2bulk_confirmed_increase_usd',
             'binance_fee_usd',

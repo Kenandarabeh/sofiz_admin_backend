@@ -38,8 +38,7 @@ class FinancialMonitoringTests(TestCase):
             family="GAME",
             role="COLLECTION",
             public_address="GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
-            dzt_balance=Decimal("50000.00"),
-            xlm_balance=Decimal("25.50")
+            dzt_balance=Decimal("50000.00")
         )
         supplier = SupplierAccount.objects.create(
             provider="G2BULK",
@@ -140,11 +139,9 @@ class FinancialMonitoringTests(TestCase):
         res = StellarService.sync_wallet(wallet)
         self.assertTrue(res['success'])
         self.assertEqual(res['dzt'], Decimal("12500.7500"))
-        self.assertEqual(res['xlm'], Decimal("34.5000"))
 
         wallet.refresh_from_db()
         self.assertEqual(wallet.dzt_balance, Decimal("12500.7500"))
-        self.assertEqual(wallet.xlm_balance, Decimal("34.5000"))
 
     @patch('httpx.Client.get')
     def test_g2bulk_service_sync(self, mock_get):

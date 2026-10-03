@@ -22,6 +22,7 @@ from .models import (
     WalletSweepLog,
     SupplierAccount,
     BaridiMobAccount,
+    BaridiMobTransaction,
     CapitalEntry,
     WithdrawalRecord,
     BaridiMobFundingReceipt,
@@ -44,6 +45,8 @@ from .models import (
     WalletFamily,
     WalletRole,
     WalletCategory,
+    SupplierProvider,
+    BinanceAccount,
 )
 from .serializers import (
     MonitoringGlobalSettingsSerializer,
@@ -51,6 +54,7 @@ from .serializers import (
     WalletSweepLogSerializer,
     SupplierAccountSerializer,
     BaridiMobAccountSerializer,
+    BaridiMobTransactionSerializer,
     CapitalEntrySerializer,
     WithdrawalRecordSerializer,
     BaridiMobFundingReceiptSerializer,
@@ -105,10 +109,19 @@ class DashboardOverviewAPIView(APIView):
         baridimob_accounts = BaridiMobAccount.objects.filter(is_active=True)
         total_baridimob_dzd = baridimob_accounts.aggregate(total=Sum('balance_dzd'))['total'] or Decimal("0.00")
 
-        # 4. Total Current Assets
-        total_assets = (total_dzt + total_g2bulk_dzd + total_baridimob_dzd).quantize(Decimal("0.01"))
+        # 4. Binance Corporate USDT Reserve (Crypto Assets)
+        binance_accounts = BinanceAccount.objects.filter(is_active=True)
+        total_binance_dzd = Decimal("0.00")
+        total_binance_usdt = Decimal("0.00")
+        for ba in binance_accounts:
+            ba.update_dzd_equivalent(settings.usd_to_dzd_exchange_rate)
+            total_binance_usdt += ba.balance_usdt
+            total_binance_dzd += ba.balance_dzd_equivalent
 
-        # 5. Total Expenses
+        # 5. Total Current Assets (DZT + G2Bulk Inventory + Binance USDT + BaridiMob Cash)
+        total_assets = (total_dzt + total_g2bulk_dzd + total_binance_dzd + total_baridimob_dzd).quantize(Decimal("0.01"))
+
+        # 6. Total Expenses
         total_expenses = ExpenseRecord.objects.aggregate(total=Sum('amount_dzd'))['total'] or Decimal("0.00")
 
         # 6. Total Capital Inflows (Direct Admin Control or Capital Entries)
@@ -196,7 +209,6 @@ class DashboardOverviewAPIView(APIView):
                 'category': w.category,
                 'public_address': w.public_address,
                 'dzt_balance': float(w.dzt_balance),
-                'xlm_balance': float(w.xlm_balance),
                 'is_active': w.is_active,
                 'last_synced_at': w.last_synced_at.isoformat() if w.last_synced_at else None,
             }
@@ -212,7 +224,6 @@ class DashboardOverviewAPIView(APIView):
                 'role': w.role,
                 'public_address': w.public_address,
                 'dzt_balance': float(w.dzt_balance),
-                'xlm_balance': float(w.xlm_balance),
                 'last_synced_at': w.last_synced_at.isoformat() if w.last_synced_at else None,
             }
             for w in profit_wallets_qs
@@ -707,6 +718,10 @@ class BinanceLiveAPIView(APIView):
                     str(x).strip() for x in WithdrawalRecord.objects.exclude(supplier_pay_id__isnull=True).exclude(supplier_pay_id='').values_list('supplier_pay_id', flat=True)
                     if x
                 }
+                used_binance_pay = {
+                    str(x).strip() for x in WithdrawalRecord.objects.exclude(binance_pay_id__isnull=True).exclude(binance_pay_id='').values_list('binance_pay_id', flat=True)
+                    if x
+                }
                 used_ref = {
                     str(x).strip() for x in WithdrawalRecord.objects.exclude(reference__isnull=True).exclude(reference='').values_list('reference', flat=True)
                     if x
@@ -715,7 +730,7 @@ class BinanceLiveAPIView(APIView):
                     str(x).strip() for x in WithdrawalRecord.objects.exclude(binance_txid__isnull=True).exclude(binance_txid='').values_list('binance_txid', flat=True)
                     if x
                 }
-                all_used = used_sup_pay | used_ref | used_tx
+                all_used = used_sup_pay | used_binance_pay | used_ref | used_tx
                 data['transactions'] = [
                     tx for tx in data['transactions']
                     if str(tx.get('transactionId') or '').strip() not in all_used
@@ -818,9 +833,14 @@ class SupplierAccountViewSet(viewsets.ModelViewSet):
                 str(x).strip() for x in WithdrawalRecord.objects.exclude(supplier_pay_id__isnull=True).exclude(supplier_pay_id='').values_list('supplier_pay_id', flat=True)
                 if x
             }
+            used_g2b = {
+                str(x).strip() for x in WithdrawalRecord.objects.exclude(g2bulk_transaction_id__isnull=True).exclude(g2bulk_transaction_id='').values_list('g2bulk_transaction_id', flat=True)
+                if x
+            }
+            all_used = used_sup_pay | used_g2b
             data['transactions'] = [
                 t for t in data['transactions']
-                if str(t.get('id') or '').strip() not in used_sup_pay
+                if str(t.get('id') or '').strip() not in all_used
             ]
             data['total'] = len(data['transactions'])
         return Response(data)
@@ -853,6 +873,37 @@ class BaridiMobAccountViewSet(viewsets.ModelViewSet):
             })
         except Exception as e:
             return Response({'success': False, 'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['get'])
+    def transactions(self, request, pk=None):
+        """Fetch archived permanent transactions ledger for this specific account"""
+        account = self.get_object()
+        txs = account.transactions.all().order_by('-transaction_date', '-created_at')
+        page = self.paginate_queryset(txs)
+        if page is not None:
+            serializer = BaridiMobTransactionSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = BaridiMobTransactionSerializer(txs, many=True)
+        return Response(serializer.data)
+
+
+class BaridiMobTransactionViewSet(viewsets.ReadOnlyModelViewSet):
+    """Archived historical BaridiMob account transactions ledger (Immutable Bank Audit)"""
+    queryset = BaridiMobTransaction.objects.all().order_by('-transaction_date', '-created_at')
+    serializer_class = BaridiMobTransactionSerializer
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        account_id = self.request.query_params.get('account')
+        system_type = self.request.query_params.get('system_type')
+        tx_type = self.request.query_params.get('type')
+        if account_id:
+            qs = qs.filter(account_id=account_id)
+        if system_type:
+            qs = qs.filter(account__system_type=system_type)
+        if tx_type:
+            qs = qs.filter(transaction_type=tx_type)
+        return qs
 
 
 # ==============================================================================
@@ -1547,20 +1598,39 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
             withdrawal.notes = (withdrawal.notes or '').strip() + f"\n• {p2p_msg}"
 
         elif target_stage == WithdrawalStage.COMPLETED:
-            # Stage 3: G2Bulk Wholesale Credited & Closed
+            # Stage 3: G2Bulk Wholesale Credited & Closed (Capturing BOTH Binance Outflow & G2Bulk Credit)
             target_stage = WithdrawalStage.COMPLETED
-            if request.data.get('supplier_pay_id'):
-                clean_sup_id = request.data.get('supplier_pay_id').strip()
-                existing = WithdrawalRecord.objects.filter(
-                    supplier_pay_id=clean_sup_id
+            
+            # 1. Binance Outflow Transfer (Binance Pay / Crypto Transfer to G2Bulk)
+            binance_pay_id = (request.data.get('binance_pay_id') or request.data.get('supplier_pay_id') or '').strip()
+            if binance_pay_id:
+                existing_bp = WithdrawalRecord.objects.filter(
+                    models.Q(binance_pay_id=binance_pay_id) | models.Q(supplier_pay_id=binance_pay_id)
                 ).exclude(id=withdrawal.id).first()
-                if existing:
+                if existing_bp:
                     return Response({
                         'success': False,
                         'is_duplicate': True,
-                        'error': f"G2Bulk / Binance Pay Transaction #{clean_sup_id} has already been consumed in Withdrawal #{existing.id} ({existing.title}). Reusing transactions is strictly prohibited."
+                        'error': f"Binance Outflow Transaction #{binance_pay_id} has already been consumed in Withdrawal #{existing_bp.id} ({existing_bp.title}). Reusing transactions is strictly prohibited."
                     }, status=status.HTTP_409_CONFLICT)
-                withdrawal.supplier_pay_id = clean_sup_id
+                withdrawal.binance_pay_id = binance_pay_id
+                withdrawal.supplier_pay_id = binance_pay_id
+
+            # 2. G2Bulk Account Credit Transaction (Internal G2Bulk Top-Up Record)
+            g2bulk_tx_id = (request.data.get('g2bulk_transaction_id') or '').strip()
+            if g2bulk_tx_id:
+                existing_g2b = WithdrawalRecord.objects.filter(
+                    g2bulk_transaction_id=g2bulk_tx_id
+                ).exclude(id=withdrawal.id).first()
+                if existing_g2b:
+                    return Response({
+                        'success': False,
+                        'is_duplicate': True,
+                        'error': f"G2Bulk Credit Transaction #{g2bulk_tx_id} has already been linked to Withdrawal #{existing_g2b.id} ({existing_g2b.title}). Reusing transactions is strictly prohibited."
+                    }, status=status.HTTP_409_CONFLICT)
+                withdrawal.g2bulk_transaction_id = g2bulk_tx_id
+                if not withdrawal.supplier_pay_id:
+                    withdrawal.supplier_pay_id = g2bulk_tx_id
 
             if request.data.get('g2bulk_confirmed_increase_usd'):
                 try:
@@ -1572,7 +1642,6 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
 
             # Enforce identical amounts: G2Bulk credited amount must match Stage 2 USDT acquired
             g2b_credit = withdrawal.g2bulk_confirmed_increase_usd or withdrawal.amount_usd_equivalent or Decimal("0.00")
-            p2p_credit = withdrawal.amount_usd_equivalent or g2b_credit
             withdrawal.g2bulk_confirmed_increase_usd = g2b_credit
 
             # Capture and store Binance Transaction / Network Fee
@@ -1592,14 +1661,14 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
             # Auto-log Binance Transaction Fee as an ExpenseRecord for 100% accounting integrity
             if fee_dzd > Decimal("0.00"):
                 ExpenseRecord.objects.create(
-                    title=f"Binance G2Bulk Transfer Fee #{withdrawal.supplier_pay_id or withdrawal.id}",
+                    title=f"Binance G2Bulk Transfer Fee #{withdrawal.binance_pay_id or withdrawal.supplier_pay_id or withdrawal.id}",
                     system_type=withdrawal.system_type,
                     category=ExpenseCategory.BLOCKCHAIN_FEE,
                     amount_dzd=fee_dzd,
                     expense_date=withdrawal.withdrawal_date,
                     related_supplier=withdrawal.destination_supplier,
-                    reference=withdrawal.supplier_pay_id or withdrawal.reference,
-                    notes=f"Auto-logged Binance transfer fee of ${fee_usd} USD ({fee_dzd:,.2f} DZD) for G2Bulk replenishment #{withdrawal.supplier_pay_id or withdrawal.id}"
+                    reference=withdrawal.binance_pay_id or withdrawal.supplier_pay_id or withdrawal.reference,
+                    notes=f"Auto-logged Binance transfer fee of ${fee_usd} USD ({fee_dzd:,.2f} DZD) for G2Bulk replenishment #{withdrawal.binance_pay_id or withdrawal.id}"
                 )
 
             # Trigger live G2Bulk balance sync
@@ -1610,9 +1679,10 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
 
             g2b_msg = (
                 f"[Stage 3: G2Bulk Confirmed & Closed @ {now_str}] "
-                f"Supplier Pay Ref: #{withdrawal.supplier_pay_id or 'N/A'} | "
-                f"Confirmed G2Bulk Credit: ${g2b_credit:,.2f} USD | "
-                f"Binance Network Fee: ${fee_usd:,.4f} USD ({fee_dzd:,.2f} DZD) | "
+                f"Binance Outflow: #{withdrawal.binance_pay_id or withdrawal.supplier_pay_id or 'N/A'} | "
+                f"G2Bulk Deposit: #{withdrawal.g2bulk_transaction_id or 'N/A'} | "
+                f"Confirmed Credit: ${g2b_credit:,.2f} USD | "
+                f"Binance Fee: ${fee_usd:,.4f} USD ({fee_dzd:,.2f} DZD) | "
                 f"All 3 Stages 100% Balanced."
             )
             if raw_note:
@@ -1935,6 +2005,7 @@ class GamingMonitoringAPIView(APIView):
 
         return Response({
             'success': True,
+            'gaming_baridimob_min_threshold_dzd': float(settings.gaming_baridimob_min_threshold_dzd or 10000.0),
             'equation': {
                 'is_balanced': is_balanced,
                 'discrepancy_dzd': discrepancy,
@@ -1974,9 +2045,13 @@ class GamingMonitoringAPIView(APIView):
                 'account_email': salah_account.account_email or 'salahsofi',
                 'baridimob_username': salah_account.account_email or 'salahsofi',
                 'balance_dzd': float(salah_account.balance_dzd),
+                'min_threshold_dzd': float(salah_account.min_balance_threshold_dzd or 10000.0),
+                'min_recommended_dzd': float(salah_account.min_balance_threshold_dzd or 10000.0),
+                'is_below_threshold': bool(salah_account.balance_dzd < (salah_account.min_balance_threshold_dzd or Decimal("10000.00"))),
+                'needs_refill': bool(salah_account.balance_dzd < (salah_account.min_balance_threshold_dzd or Decimal("10000.00"))),
                 'is_active': salah_account.is_active,
                 'last_synced_at': salah_account.last_synced_at.strftime('%Y-%m-%d %H:%M') if salah_account.last_synced_at else None,
-                'liquidity_status': 'HEALTHY' if salah_account.balance_dzd >= 10000 else ('LOW' if salah_account.balance_dzd > 0 else 'CRITICAL_ZERO'),
+                'liquidity_status': 'HEALTHY' if salah_account.balance_dzd >= (salah_account.min_balance_threshold_dzd or Decimal("10000.00")) else ('LOW' if salah_account.balance_dzd > 0 else 'CRITICAL_ZERO'),
                 'min_recommended_dzd': 10000.0,
                 'working_capital_role': 'Primary Gaming Operations & Wholesale Counterparty Account',
                 'audit_notice': 'Monitored Working Capital: This account receives aggregated wholesale withdrawal disbursements to maintain operational gaming balance.'
@@ -2060,6 +2135,59 @@ class SalahGamingAccountAPIView(APIView):
                 notes="Primary Gaming Working Capital Account whitelisted for game top-up operations and wholesale disbursement."
             )
 
+        auto_sync = request.query_params.get('sync', 'false').lower() == 'true'
+        if auto_sync or not acc.last_synced_at or (timezone.now() - acc.last_synced_at).total_seconds() > 1800:
+            try:
+                from .services.baridimob_service import BaridiMobService
+                BaridiMobService.sync_baridi_balance(account_key='game')
+                BaridiMobService.sync_live_transactions_to_db(account_key='game', limit=25)
+                acc.refresh_from_db()
+            except Exception as e:
+                logger.warning(f"Error during Salah Gaming auto-sync: {e}")
+
+        # Archived transactions ledger for Salah
+        txs = acc.transactions.all().order_by('-transaction_date', '-created_at')
+        inflow_agg = txs.filter(amount__gt=0).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        outflow_agg = txs.filter(amount__lt=0).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        postal_fees_agg = txs.filter(fee_amount__gt=0).aggregate(total=Sum('fee_amount'))['total'] or Decimal('0.00')
+
+        # Institutional issue & risk detection
+        issues = []
+        if acc.balance_dzd <= Decimal('0.00'):
+            issues.append({
+                'id': 'CRITICAL_ZERO_BALANCE',
+                'severity': 'danger',
+                'title': 'Critical Zero Liquidity',
+                'message': 'Salah Gaming account has 0.00 DZD balance. Immediate replenishment required for gaming operations.',
+            })
+        elif acc.balance_dzd < Decimal('10000.00'):
+            issues.append({
+                'id': 'LOW_BALANCE',
+                'severity': 'warning',
+                'title': 'Low Liquidity Warning',
+                'message': f'Balance is {acc.balance_dzd:,.2f} DZD, which is below the operational threshold of 10,000.00 DZD.',
+            })
+
+        if not acc.last_synced_at or (timezone.now() - acc.last_synced_at).total_seconds() > 1800:
+            issues.append({
+                'id': 'STALE_SYNC',
+                'severity': 'info',
+                'title': 'Sync Recommended',
+                'message': 'Account balance has not been synchronized with BaridiMob in over 30 minutes.',
+            })
+
+        pending_disbursements = WithdrawalRecord.objects.filter(
+            models.Q(recipient_rip=acc.rip_number) | models.Q(destination_recipient__icontains='Salah'),
+            stage__in=[WithdrawalStage.ALLOCATED, WithdrawalStage.BINANCE_P2P]
+        ).count()
+        if pending_disbursements > 0:
+            issues.append({
+                'id': 'PENDING_DISBURSEMENT',
+                'severity': 'warning',
+                'title': 'Pending Replenishment Pipeline',
+                'message': f'{pending_disbursements} withdrawal replenishment cycle(s) currently in progress for this account.',
+            })
+
         return Response({
             'success': True,
             'account': {
@@ -2072,19 +2200,47 @@ class SalahGamingAccountAPIView(APIView):
                 'account_email': acc.account_email or 'salahsofi',
                 'baridimob_username': acc.account_email or 'salahsofi',
                 'balance_dzd': float(acc.balance_dzd),
+                'min_threshold_dzd': float(acc.min_balance_threshold_dzd or 10000.0),
+                'min_recommended_dzd': float(acc.min_balance_threshold_dzd or 10000.0),
+                'is_below_threshold': bool(acc.balance_dzd < (acc.min_balance_threshold_dzd or Decimal("10000.00"))),
+                'needs_refill': bool(acc.balance_dzd < (acc.min_balance_threshold_dzd or Decimal("10000.00"))),
                 'is_active': acc.is_active,
                 'last_synced_at': acc.last_synced_at.strftime('%Y-%m-%d %H:%M:%S') if acc.last_synced_at else None,
-                'min_recommended_dzd': 10000.0,
-                'liquidity_status': 'HEALTHY' if acc.balance_dzd >= 10000 else ('LOW' if acc.balance_dzd > 0 else 'CRITICAL_ZERO'),
+                'liquidity_status': 'HEALTHY' if acc.balance_dzd >= (acc.min_balance_threshold_dzd or Decimal("10000.00")) else ('LOW' if acc.balance_dzd > 0 else 'CRITICAL_ZERO'),
                 'working_capital_role': 'Primary Gaming Operations & Wholesale Counterparty Account',
                 'audit_notice': 'Monitored Working Capital: This account receives aggregated wholesale withdrawal disbursements to maintain operational gaming balance.'
-            }
+            },
+            'stats': {
+                'total_inflows_dzd': float(inflow_agg),
+                'total_outflows_dzd': float(abs(outflow_agg)),
+                'total_postal_fees_dzd': float(postal_fees_agg),
+                'transaction_count': txs.count(),
+                'issues_count': len(issues),
+            },
+            'issues': issues,
+            'recent_transactions': [
+                {
+                    'id': t.id,
+                    'tid': t.tid,
+                    'ref_num': t.ref_num or '',
+                    'account_name': acc.account_name,
+                    'amount': float(t.amount),
+                    'fee_amount': float(t.fee_amount),
+                    'transaction_type': t.transaction_type or '',
+                    'operation_code': t.operation_code or '',
+                    'is_bank_fee': t.is_bank_fee,
+                    'description': t.description or '',
+                    'available_balance': float(t.available_balance) if t.available_balance is not None else None,
+                    'transaction_date': t.transaction_date.strftime('%Y-%m-%d %H:%M') if t.transaction_date else None,
+                }
+                for t in txs[:100]
+            ]
         })
 
 
 class SalahGamingAccountSyncAPIView(APIView):
     """
-    Synchronizes Salah Gaming Account live balance with Epay BaridiMob API.
+    Synchronizes Salah Gaming Account live balance and archived transactions with Epay BaridiMob API.
     """
     def post(self, request):
         from .services.baridimob_service import BaridiMobService
@@ -2092,30 +2248,48 @@ class SalahGamingAccountSyncAPIView(APIView):
         if not sync_res.get('success'):
             return Response({'success': False, 'error': sync_res.get('error', 'Failed to synchronize live balance.')}, status=status.HTTP_502_BAD_GATEWAY)
 
+        # Also sync transactions
+        try:
+            BaridiMobService.sync_live_transactions_to_db(account_key='game', limit=25)
+        except Exception as e:
+            logger.warning(f"Error syncing game transactions: {e}")
+
         acc = BaridiMobAccount.objects.filter(
             system_type=SubSystemType.GAMING,
             is_active=True
         ).first()
 
+        txs = acc.transactions.all().order_by('-transaction_date', '-created_at') if acc else []
+        inflow_agg = txs.filter(amount__gt=0).aggregate(total=Sum('amount'))['total'] or Decimal('0.00') if acc else Decimal('0.00')
+        outflow_agg = txs.filter(amount__lt=0).aggregate(total=Sum('amount'))['total'] or Decimal('0.00') if acc else Decimal('0.00')
+
         return Response({
             'success': True,
-            'message': f"Salah Gaming Account balance synchronized: {float(acc.balance_dzd):,.2f} DZD",
+            'message': f"Gaming Operational Account balance synchronized: {float(acc.balance_dzd):,.2f} DZD",
             'account': {
                 'id': acc.id,
                 'account_name': acc.account_name,
                 'account_key': 'game',
-                'owner': 'Salah',
+                'owner': 'Operations',
                 'ccp_number': '0017388665',
                 'rip_number': acc.rip_number,
-                'account_email': acc.account_email or 'salahsofi',
-                'baridimob_username': acc.account_email or 'salahsofi',
+                'account_email': acc.account_email or 'ops.gaming',
+                'baridimob_username': acc.account_email or 'ops.gaming',
                 'balance_dzd': float(acc.balance_dzd),
+                'min_threshold_dzd': float(acc.min_balance_threshold_dzd or 10000.0),
+                'min_recommended_dzd': float(acc.min_balance_threshold_dzd or 10000.0),
+                'is_below_threshold': bool(acc.balance_dzd < (acc.min_balance_threshold_dzd or Decimal("10000.00"))),
+                'needs_refill': bool(acc.balance_dzd < (acc.min_balance_threshold_dzd or Decimal("10000.00"))),
                 'is_active': acc.is_active,
                 'last_synced_at': acc.last_synced_at.strftime('%Y-%m-%d %H:%M:%S') if acc.last_synced_at else None,
-                'min_recommended_dzd': 10000.0,
-                'liquidity_status': 'HEALTHY' if acc.balance_dzd >= 10000 else ('LOW' if acc.balance_dzd > 0 else 'CRITICAL_ZERO'),
+                'liquidity_status': 'HEALTHY' if acc.balance_dzd >= (acc.min_balance_threshold_dzd or Decimal("10000.00")) else ('LOW' if acc.balance_dzd > 0 else 'CRITICAL_ZERO'),
                 'working_capital_role': 'Primary Gaming Operations & Wholesale Counterparty Account',
                 'audit_notice': 'Monitored Working Capital: This account receives aggregated wholesale withdrawal disbursements to maintain operational gaming balance.'
+            },
+            'stats': {
+                'total_inflows_dzd': float(inflow_agg),
+                'total_outflows_dzd': float(abs(outflow_agg)),
+                'transaction_count': txs.count() if acc else 0,
             }
         })
 
@@ -2151,16 +2325,39 @@ class UtilityMonitoringAPIView(APIView):
 
         facture_profit_wallet = StellarWallet.objects.filter(family=WalletFamily.FACTURE, role=WalletRole.PROFIT, is_active=True).first()
         facture_withdrawal_wallet = StellarWallet.objects.filter(family=WalletFamily.FACTURE, role=WalletRole.WITHDRAWAL, is_active=True).first()
-        esim_profit_wallet = StellarWallet.objects.filter(family=WalletFamily.ESIM, role=WalletRole.PROFIT, is_active=True).first()
-        esim_withdrawal_wallet = StellarWallet.objects.filter(family=WalletFamily.ESIM, role=WalletRole.WITHDRAWAL, is_active=True).first()
 
         left_side = round(total_baridimob_dzd + total_utility_dzt + utility_expenses, 2)
         right_side = round(utility_capital + total_utility_profit, 2)
         discrepancy = round(left_side - right_side, 2)
         is_balanced = abs(discrepancy) <= 0.05
 
+        issues = []
+        if not is_balanced:
+            issues.append({
+                'id': 'EQUATION_DISCREPANCY',
+                'severity': 'danger',
+                'title': 'Factures Equation Discrepancy',
+                'message': f'Discrepancy of {discrepancy:,.2f} DZD between Left Side ({left_side:,.2f} DZD) and Right Side ({right_side:,.2f} DZD).',
+            })
+        if total_baridimob_dzd <= 0:
+            issues.append({
+                'id': 'FACTURES_ZERO_BALANCE',
+                'severity': 'warning',
+                'title': 'Factures Operational BaridiMob Zero Balance',
+                'message': 'Factures Operational BaridiMob account has 0.00 DZD. Needs refill to settle upcoming invoices.',
+            })
+        if is_stale:
+            issues.append({
+                'id': 'STALE_SYNC',
+                'severity': 'info',
+                'title': 'Sync Recommended',
+                'message': 'BaridiMob balance has not been refreshed in over 3 minutes.',
+            })
+
         return Response({
             'success': True,
+            'utility_baridimob_min_threshold_dzd': float(settings.utility_baridimob_min_threshold_dzd or 10000.0),
+            'issues': issues,
             'equation': {
                 'is_balanced': is_balanced,
                 'discrepancy_dzd': discrepancy,
@@ -2186,20 +2383,6 @@ class UtilityMonitoringAPIView(APIView):
                 'dzt_balance': float(facture_withdrawal_wallet.dzt_balance),
                 'is_active': facture_withdrawal_wallet.is_active,
             } if facture_withdrawal_wallet else None,
-            'esim_profit_wallet': {
-                'id': esim_profit_wallet.id,
-                'name': esim_profit_wallet.name,
-                'public_address': esim_profit_wallet.public_address,
-                'dzt_balance': float(esim_profit_wallet.dzt_balance),
-                'is_active': esim_profit_wallet.is_active,
-            } if esim_profit_wallet else None,
-            'esim_withdrawal_wallet': {
-                'id': esim_withdrawal_wallet.id,
-                'name': esim_withdrawal_wallet.name,
-                'public_address': esim_withdrawal_wallet.public_address,
-                'dzt_balance': float(esim_withdrawal_wallet.dzt_balance),
-                'is_active': esim_withdrawal_wallet.is_active,
-            } if esim_withdrawal_wallet else None,
             'baridi_accounts': [
                 {
                     'id': b.id,
@@ -2207,6 +2390,9 @@ class UtilityMonitoringAPIView(APIView):
                     'rip_number': b.rip_number,
                     'account_email': b.account_email,
                     'balance_dzd': float(b.balance_dzd),
+                    'min_threshold_dzd': float(b.min_balance_threshold_dzd or 10000.0),
+                    'is_below_threshold': bool(b.balance_dzd < (b.min_balance_threshold_dzd or Decimal("10000.00"))),
+                    'needs_refill': bool(b.balance_dzd < (b.min_balance_threshold_dzd or Decimal("10000.00"))),
                     'is_active': b.is_active,
                     'last_synced_at': b.last_synced_at.strftime('%Y-%m-%d %H:%M') if b.last_synced_at else None,
                 }
@@ -2234,6 +2420,58 @@ class UtilityMonitoringAPIView(APIView):
                     'payment_date': b.payment_date.strftime('%Y-%m-%d %H:%M') if b.payment_date else None,
                 }
                 for b in UtilityBillRecord.objects.order_by('-payment_date')[:15]
+            ],
+            'stats': {
+                'total_bills_count': BaridiMobTransaction.objects.filter(
+                    models.Q(account__system_type__in=[SubSystemType.UTILITY, SubSystemType.ALL]) |
+                    models.Q(account__account_name__icontains='sihaam') |
+                    models.Q(account__account_name__icontains='sihem'),
+                    operation_code='BILL_PAYMENT'
+                ).count(),
+                'total_reversals_count': BaridiMobTransaction.objects.filter(
+                    models.Q(account__system_type__in=[SubSystemType.UTILITY, SubSystemType.ALL]) |
+                    models.Q(account__account_name__icontains='sihaam') |
+                    models.Q(account__account_name__icontains='sihem'),
+                    operation_code='REVERSAL'
+                ).count(),
+                'total_refills_count': BaridiMobTransaction.objects.filter(
+                    models.Q(account__system_type__in=[SubSystemType.UTILITY, SubSystemType.ALL]) |
+                    models.Q(account__account_name__icontains='sihaam') |
+                    models.Q(account__account_name__icontains='sihem'),
+                    operation_code='TRANSFER_IN'
+                ).count(),
+                'total_reversals_amount_dzd': float(abs(BaridiMobTransaction.objects.filter(
+                    models.Q(account__system_type__in=[SubSystemType.UTILITY, SubSystemType.ALL]) |
+                    models.Q(account__account_name__icontains='sihaam') |
+                    models.Q(account__account_name__icontains='sihem'),
+                    operation_code='REVERSAL'
+                ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00'))),
+                'total_transactions_count': BaridiMobTransaction.objects.filter(
+                    models.Q(account__system_type__in=[SubSystemType.UTILITY, SubSystemType.ALL]) |
+                    models.Q(account__account_name__icontains='sihaam') |
+                    models.Q(account__account_name__icontains='sihem')
+                ).count(),
+            },
+            'recent_transactions': [
+                {
+                    'id': t.id,
+                    'tid': t.tid,
+                    'ref_num': t.ref_num or '',
+                    'account_name': t.account.account_name,
+                    'amount': float(t.amount),
+                    'fee_amount': float(t.fee_amount),
+                    'transaction_type': t.transaction_type or '',
+                    'operation_code': t.operation_code or '',
+                    'is_bank_fee': t.is_bank_fee,
+                    'description': t.description or '',
+                    'available_balance': float(t.available_balance) if t.available_balance is not None else None,
+                    'transaction_date': t.transaction_date.strftime('%Y-%m-%d %H:%M') if t.transaction_date else None,
+                }
+                for t in BaridiMobTransaction.objects.filter(
+                    models.Q(account__system_type__in=[SubSystemType.UTILITY, SubSystemType.ALL]) |
+                    models.Q(account__account_name__icontains='sihaam') |
+                    models.Q(account__account_name__icontains='sihem')
+                ).order_by('-transaction_date', '-created_at')[:150]
             ],
         })
 

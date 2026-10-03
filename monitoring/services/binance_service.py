@@ -291,26 +291,75 @@ class BinanceApiService:
 
     @classmethod
     def get_account_balances(cls) -> dict:
-        """Fetches USDT balances in Spot & Funding wallets"""
+        """Fetches USDT balances across Binance Funding and Spot wallets"""
         settings = MonitoringGlobalSettings.get_settings()
         if not settings.binance_api_key or not settings.binance_api_secret:
-            return {'success': False, 'error': 'Binance API credentials not configured in Global Settings.', 'assets': []}
+            return {
+                'success': False,
+                'error': 'Binance API credentials not configured in Global Settings.',
+                'total_usdt': 0.0,
+                'funding_usdt': 0.0,
+                'spot_usdt': 0.0,
+                'balance_dzd_equivalent': 0.0,
+                'assets': []
+            }
 
-        endpoint = f"{cls.BASE_URL}/sapi/v1/asset/getUserAsset"
-        params = {'asset': 'USDT'}
-        cls._sign_params(params, settings.binance_api_secret)
         headers = {"X-MBX-APIKEY": settings.binance_api_key}
+        funding_free = Decimal('0.00')
+        funding_locked = Decimal('0.00')
+        spot_free = Decimal('0.00')
+        spot_locked = Decimal('0.00')
 
         try:
             with httpx.Client(timeout=10.0) as client:
-                res = client.post(endpoint, params=params, headers=headers)
-                data = res.json()
-                if res.status_code == 200 and isinstance(data, list):
-                    return {'success': True, 'assets': data}
-                return {'success': False, 'error': str(data), 'assets': []}
+                # 1. Query Binance Funding Wallet (/sapi/v1/asset/get-funding-asset)
+                p_fund = {'asset': 'USDT'}
+                cls._sign_params(p_fund, settings.binance_api_secret)
+                r_fund = client.post(f"{cls.BASE_URL}/sapi/v1/asset/get-funding-asset", params=p_fund, headers=headers)
+                if r_fund.status_code == 200:
+                    d_fund = r_fund.json()
+                    if isinstance(d_fund, list) and d_fund:
+                        funding_free = Decimal(str(d_fund[0].get('free', '0.00')))
+                        funding_locked = Decimal(str(d_fund[0].get('locked', '0.00')))
+
+                # 2. Query Binance Spot Wallet (/sapi/v3/asset/getUserAsset)
+                p_spot = {'asset': 'USDT'}
+                cls._sign_params(p_spot, settings.binance_api_secret)
+                r_spot = client.post(f"{cls.BASE_URL}/sapi/v3/asset/getUserAsset", params=p_spot, headers=headers)
+                if r_spot.status_code == 200:
+                    d_spot = r_spot.json()
+                    if isinstance(d_spot, list) and d_spot:
+                        spot_free = Decimal(str(d_spot[0].get('free', '0.00')))
+                        spot_locked = Decimal(str(d_spot[0].get('locked', '0.00')))
+
+            total_usdt = (funding_free + funding_locked + spot_free + spot_locked).quantize(Decimal('0.01'))
+            rate = settings.usd_to_dzd_exchange_rate or Decimal('240.00')
+            total_dzd = (total_usdt * rate).quantize(Decimal('0.01'))
+
+            return {
+                'success': True,
+                'total_usdt': float(total_usdt),
+                'funding_usdt': float(funding_free + funding_locked),
+                'spot_usdt': float(spot_free + spot_locked),
+                'balance_dzd_equivalent': float(total_dzd),
+                'exchange_rate': float(rate),
+                'last_synced_at': timezone.now().isoformat(),
+                'assets': [
+                    {'wallet': 'FUNDING', 'asset': 'USDT', 'free': float(funding_free), 'locked': float(funding_locked)},
+                    {'wallet': 'SPOT', 'asset': 'USDT', 'free': float(spot_free), 'locked': float(spot_locked)},
+                ]
+            }
         except Exception as e:
             logger.error(f"Error fetching Binance balances: {e}")
-            return {'success': False, 'error': str(e), 'assets': []}
+            return {
+                'success': False,
+                'error': str(e),
+                'total_usdt': 0.0,
+                'funding_usdt': 0.0,
+                'spot_usdt': 0.0,
+                'balance_dzd_equivalent': 0.0,
+                'assets': []
+            }
 
     @classmethod
     def get_withdraw_history(cls, coin: str = None, limit: int = 50) -> dict:

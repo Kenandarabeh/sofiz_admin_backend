@@ -72,11 +72,10 @@ class StellarService:
         try:
             res = cls.get_account_balances(wallet.public_address)
             wallet.dzt_balance = res["dzt"]
-            wallet.xlm_balance = res["xlm"]
             wallet.last_synced_at = timezone.now()
             wallet.last_error = None
             wallet.save()
-            return {"success": True, "wallet": wallet, "dzt": res["dzt"], "xlm": res["xlm"]}
+            return {"success": True, "wallet": wallet, "dzt": res["dzt"]}
         except Exception as e:
             error_msg = str(e)
             logger.error(f"Error syncing Stellar wallet {wallet.public_address}: {error_msg}")

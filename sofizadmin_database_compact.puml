@@ -1,0 +1,191 @@
+@startuml SofizAdmin_Database_Compact
+!theme plain
+skinparam backgroundColor #0D1117
+skinparam classBorderColor #30363D
+skinparam classBackgroundColor #161B22
+skinparam classFontColor #E6EDF3
+skinparam arrowColor #58A6FF
+skinparam linetype ortho
+skinparam shadowing false
+
+package "1. Global & Working Capital" #161B22 {
+  class MonitoringGlobalSettings <<Singleton>> {
+    + id : BigAutoField [PK=1]
+    + usd_to_dzd_exchange_rate : Decimal(10,2) [240.0]
+    + dzt_asset_code : CharField(12) [DZT]
+    + dzt_asset_issuer : CharField(100)
+    + g2bulk_min_threshold_usd : Decimal(10,2)
+    + total_live_profits_dzd : Decimal(18,2)
+    + total_live_sales_dzd : Decimal(18,2)
+    + is_auto_sync_enabled : Boolean
+    # games_collection_wallet : FK -> StellarWallet
+    # central_treasury_wallet : FK -> StellarWallet
+  }
+  class AccountWorkingCapital {
+    + id : BigAutoField [PK]
+    + family : CharField [GAME|FACTURE|ESIM, unique]
+    + capital_amount_dzd : Decimal(18,2)
+  }
+}
+
+package "2. Stellar Wallets" #161B22 {
+  class StellarWallet {
+    + id : BigAutoField [PK]
+    + name : CharField(150)
+    + family : CharField [GAME|FACTURE|ESIM|TREASURY]
+    + role : CharField [COLLECTION|WITHDRAWAL|PROFIT|VAULT]
+    + public_address : CharField(100) [unique]
+    + dzt_balance : Decimal(18,4)
+    + is_active : Boolean
+  }
+  class WalletSweepLog {
+    + id : BigAutoField [PK]
+    # source_wallet : FK -> StellarWallet
+    # destination_wallet : FK -> StellarWallet
+    + amount_dzt : Decimal(18,4)
+    + sweep_type : CharField
+    + status : CharField [SUCCESS|FAILED|ABORTED_DISCREPANCY]
+  }
+}
+
+package "3. Liquidity Accounts" #161B22 {
+  class SupplierAccount {
+    + id : BigAutoField [PK]
+    + provider : CharField [G2BULK, unique]
+    + balance_usd : Decimal(15,4)
+    + min_balance_threshold_usd : Decimal(15,4)
+    + balance_dzd_equivalent() : Decimal
+  }
+  class BaridiMobAccount {
+    + id : BigAutoField [PK]
+    + account_name : CharField(150)
+    + rip_number : CharField(50)
+    + balance_dzd : Decimal(18,2)
+    + last_stable_balance : Decimal(18,2)
+    + is_glitch_quarantined : Boolean
+  }
+  class BinanceAccount {
+    + id : BigAutoField [PK]
+    + account_name : CharField(150)
+    + balance_usdt : Decimal(18,4)
+    + balance_dzd_equivalent() : Decimal
+  }
+}
+
+package "4. Capital & Withdrawals" #161B22 {
+  class CapitalEntry {
+    + id : BigAutoField [PK]
+    + category : CharField [GAMING|UTILITY|ESIM|TREASURY]
+    + amount_dzd : Decimal(18,2)
+    + deposit_date : DateField
+    # destination_wallet : FK -> StellarWallet
+    # destination_supplier : FK -> SupplierAccount
+    # destination_baridimob : FK -> BaridiMobAccount
+    + binance_verification_status : CharField
+  }
+  class WithdrawalRecord {
+    + id : BigAutoField [PK]
+    + purpose_code : CharField(50)
+    + system_type : CharField
+    + amount_dzd : Decimal(18,2)
+    + stage : CharField [ALLOCATED|BINANCE_P2P|COMPLETED|CANCELLED]
+    # source_wallet : FK -> StellarWallet
+    # source_baridimob : FK -> BaridiMobAccount
+    # destination_supplier : FK -> SupplierAccount
+    # funding_receipt : FK -> BaridiMobFundingReceipt
+  }
+}
+
+package "5. Funding Pipeline" #161B22 {
+  class BaridiMobFundingReceipt {
+    + id : BigAutoField [PK]
+    + reference : CharField(100) [unique]
+    + file_hash : CharField(64) [SHA-256]
+    + amount_dzd : Decimal(18,2)
+    + fee_dzd : Decimal(10,2) [50.00]
+    # source_wallet : FK -> StellarWallet
+    # destination_wallet : FK -> StellarWallet
+    # expense_record : FK -> ExpenseRecord
+    # supplier_account : FK -> SupplierAccount
+    # withdrawal_record : FK -> WithdrawalRecord
+    + status : CharField [PENDING_P2P|P2P_COMPLETED|G2BULK_FUNDED]
+  }
+}
+
+package "6. Expenses & Revenues" #161B22 {
+  class ExpenseRecord {
+    + id : BigAutoField [PK]
+    + system_type : CharField
+    + category : CharField
+    + amount_dzd : Decimal(18,2)
+    # related_wallet : FK -> StellarWallet
+    # related_supplier : FK -> SupplierAccount
+    # related_baridimob : FK -> BaridiMobAccount
+  }
+  class GameProfitRecord {
+    + id : BigAutoField [PK]
+    + order_reference : CharField(100) [unique]
+    + game_code : CharField(50)
+    + cost_price_dzd : Decimal(15,2)
+    + sale_price_dzd : Decimal(15,2)
+    + net_profit_dzd : Decimal(15,2)
+  }
+  class UtilityBillRecord {
+    + id : BigAutoField [PK]
+    + service : CharField
+    + bill_amount_dzd : Decimal(15,2)
+    + commission_earned_dzd : Decimal(15,2)
+    # baridimob_account : FK -> BaridiMobAccount
+  }
+}
+
+package "7. Financial & Security Audit" #161B22 {
+  class BalanceAuditLog {
+    + id : BigAutoField [PK]
+    + checked_at : DateTimeField
+    + left_side_total : Decimal(18,2)
+    + right_side_total : Decimal(18,2)
+    + discrepancy_dzd : Decimal(18,2)
+    + status : CharField [BALANCED|DISCREPANCY_DETECTED]
+  }
+  class StaffOperator {
+    + id : BigAutoField [PK]
+    + employee_code : CharField(50) [unique]
+    + mission_role : CharField(30)
+    # linked_user : OneToOne -> auth.User
+  }
+  class OperatorActionLog {
+    + id : BigAutoField [PK]
+    # operator : FK -> auth.User
+    + action_type : CharField(20)
+    + target_model : CharField(100)
+    + changes_summary : TextField
+  }
+}
+
+MonitoringGlobalSettings --> StellarWallet : "games_collection_wallet"
+MonitoringGlobalSettings --> StellarWallet : "central_treasury_wallet"
+WalletSweepLog --> StellarWallet : "source / dest"
+CapitalEntry --> StellarWallet : "destination_wallet"
+CapitalEntry --> SupplierAccount : "destination_supplier"
+CapitalEntry --> BaridiMobAccount : "destination_baridimob"
+WithdrawalRecord --> StellarWallet : "source_wallet"
+WithdrawalRecord --> BaridiMobAccount : "source_baridimob"
+WithdrawalRecord --> SupplierAccount : "destination_supplier"
+WithdrawalRecord --> BaridiMobFundingReceipt : "funding_receipt"
+BaridiMobFundingReceipt --> StellarWallet : "source / dest"
+BaridiMobFundingReceipt --> ExpenseRecord : "expense_record (50 DZD fee)"
+BaridiMobFundingReceipt --> SupplierAccount : "supplier_account"
+BaridiMobFundingReceipt --> WithdrawalRecord : "withdrawal_record"
+ExpenseRecord --> StellarWallet : "related_wallet"
+ExpenseRecord --> SupplierAccount : "related_supplier"
+ExpenseRecord --> BaridiMobAccount : "related_baridimob"
+UtilityBillRecord --> BaridiMobAccount : "baridimob_account"
+
+note right of BalanceAuditLog
+  <b>Golden Balance Equation</b>
+  LEFT = Stellar DZT + G2Bulk + Binance + BaridiMob + In-Transit + Expenses
+  RIGHT = Capital Entries + Net Profits
+  Discrepancy = LEFT - RIGHT (Must be 0.00)
+end note
+@enduml

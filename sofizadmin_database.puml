@@ -1,0 +1,555 @@
+@startuml SofizAdmin_Database_Architecture
+' ==============================================================================
+' SOFIZ ADMIN - COMPREHENSIVE ARCHITECTURAL DATABASE SCHEMA
+' Extracted from monitoring/models.py (1,627 lines of production code)
+' Engine: Django 4+ ORM with PostgreSQL / SQLite
+' Core Accounting Model: Institutional Double-Entry & Golden Balance Ledger
+' ==============================================================================
+
+!theme plain
+skinparam backgroundColor #0D1117
+skinparam defaultFontName "Inter", "Segoe UI", sans-serif
+skinparam defaultFontSize 12
+skinparam roundCorner 8
+skinparam shadowing false
+skinparam linetype ortho
+skinparam nodesep 55
+skinparam ranksep 65
+
+' --- Colors & Borders ---
+skinparam package {
+  BackgroundColor #161B22
+  BorderColor #30363D
+  FontColor #58A6FF
+  FontStyle bold
+  FontSize 13
+}
+
+skinparam class {
+  BackgroundColor #161B22
+  BorderColor #30363D
+  ArrowColor #58A6FF
+  FontColor #E6EDF3
+  HeaderBackgroundColor #21262D
+  StereotypeFontColor #8B949E
+  BorderThickness 1.5
+}
+
+skinparam note {
+  BackgroundColor #1F242C
+  BorderColor #8B949E
+  FontColor #C9D1D9
+}
+
+' ==============================================================================
+' 1. GLOBAL SYSTEM CONFIGURATION & CAPITAL TRACKING
+' ==============================================================================
+package "1. Global Configuration & System Control" as PkgGlobal #161B22 {
+  class MonitoringGlobalSettings << (S,#1F6FEB) Singleton >> {
+    + id : BigAutoField [PK, Singleton ID=1]
+    -- API Credentials & Endpoints --
+    + g2bulk_api_key : CharField(255)
+    + g2bulk_base_url : CharField(255) [default="https://g2bulk.com/api/v2"]
+    + stellar_horizon_url : CharField(255) [default="https://horizon.stellar.org"]
+    + dzt_asset_code : CharField(12) [default="DZT"]
+    + dzt_asset_issuer : CharField(100)
+    + usd_to_dzd_exchange_rate : DecimalField(10,2) [default=240.00]
+    + epay_api_url : CharField(255)
+    + epay_api_key : CharField(255)
+    + binance_api_key : CharField(255) [nullable]
+    + binance_api_secret : CharField(255) [nullable]
+    + binance_merchant_id : CharField(100) [nullable]
+    -- Live Telemetry --
+    + total_live_profits_dzd : DecimalField(18,2) [default=0.00]
+    + total_live_sales_dzd : DecimalField(18,2) [default=0.00]
+    + total_live_orders_count : PositiveIntegerField [default=0]
+    + g2bulk_min_threshold_usd : DecimalField(10,2) [default=500.00]
+    + is_auto_sync_enabled : BooleanField [default=True]
+    + last_global_sync : DateTimeField [nullable]
+    -- Working Capital Overrides --
+    + gaming_capital_override : DecimalField(18,2) [nullable]
+    + utility_capital_override : DecimalField(18,2) [nullable]
+    -- BaridiMob Legacy & Auth --
+    + baridimob_secret_token : CharField(255)
+    + baridimob_device_id : CharField(100)
+    + master_admin_api_key : CharField(255) [nullable]
+    -- Routing Foreign Keys --
+    # games_collection_wallet_id : FK -> StellarWallet [nullable]
+    # central_treasury_wallet_id : FK -> StellarWallet [nullable]
+    + updated_at : DateTimeField [auto_now]
+    --
+    + {static} get_settings() : MonitoringGlobalSettings
+    .. Business Rules ..
+    * Always exactly 1 instance (id=1)
+    * Single source of truth for exchange rates and API keys
+  }
+
+  class AccountWorkingCapital << (E,#238636) Entity >> {
+    + id : BigAutoField [PK]
+    + family : CharField(20) [GAME | FACTURE | ESIM, unique]
+    + account_name : CharField(150) [unique]
+    + capital_amount_dzd : DecimalField(18,2) [default=0.00]
+    + description : CharField(255) [nullable]
+    + last_updated_at : DateTimeField [auto_now]
+    --
+    .. Validation Rules ..
+    * TREASURY family is STRICTLY FORBIDDEN (ValidationError)
+    * Working capital must be allocated only to operational business families
+  }
+}
+
+' ==============================================================================
+' 2. STELLAR BLOCKCHAIN WALLETS & LEDGER
+' ==============================================================================
+package "2. Stellar Blockchain Wallets & Sweeps" as PkgStellar #161B22 {
+  class StellarWallet << (W,#2EA043) Model + 8 Proxies >> {
+    + id : BigAutoField [PK]
+    + name : CharField(150)
+    + family : CharField(20) [GAME | FACTURE | ESIM | TREASURY]
+    + role : CharField(20) [COLLECTION | WITHDRAWAL | PROFIT | VAULT]
+    + category : CharField(20) [GAMING | UTILITY | TREASURY | SWEEP_VAULT | PROFIT_VAULT]
+    + public_address : CharField(100) [unique, indexed]
+    + secret_seed : CharField(100) [nullable, secure storage]
+    + dzt_balance : DecimalField(18,4) [default=0.0000]
+    + is_active : BooleanField [default=True, indexed]
+    + last_synced_at : DateTimeField [nullable]
+    + last_error : TextField [nullable]
+    + notes : TextField [nullable]
+    + created_at : DateTimeField [auto_now_add]
+    + updated_at : DateTimeField [auto_now]
+    --
+    .. DB Constraints & Proxies ..
+    * Single Treasury Constraint (only 1 TREASURY wallet permitted)
+    * Single Vault Role Constraint (only 1 VAULT role permitted)
+    * Single Profit Role per family (one PROFIT wallet per family)
+    * Indexes: (family, role, is_active), (category, is_active)
+    * Proxies: GamingWallet, UtilityWallet, TreasuryWallet,
+      SweepVaultWallet, ProfitVaultWallet, GamingFinancialStatus,
+      UtilityFinancialStatus, eSIMFinancialStatus
+  }
+
+  class WalletSweepLog << (L,#8B949E) Audit Ledger >> {
+    + id : BigAutoField [PK]
+    + timestamp : DateTimeField [default=now, indexed]
+    # source_wallet_id : FK -> StellarWallet [nullable, CASCADE=SET_NULL]
+    # destination_wallet_id : FK -> StellarWallet [nullable, CASCADE=SET_NULL]
+    + amount_dzt : DecimalField(18,4)
+    + sweep_type : CharField(30) [PROFIT_TRANSFER | SWEEP_TRANSFER | MANUAL_SWEEP]
+    + epay_reported_profit : DecimalField(18,2) [nullable]
+    + epay_reported_sales : DecimalField(18,2) [nullable]
+    + stellar_tx_hash : CharField(100) [nullable, indexed]
+    + status : CharField(30) [SUCCESS | FAILED | ABORTED_DISCREPANCY]
+    + error_details : TextField [nullable]
+    + created_at : DateTimeField [auto_now_add]
+    + updated_at : DateTimeField [auto_now]
+    --
+    .. Audit Invariants ..
+    * Immutable transaction log
+    * ABORTED_DISCREPANCY logs automated safety halts if sales != profit deltas
+  }
+}
+
+' ==============================================================================
+' 3. EXTERNAL SETTLEMENT ACCOUNTS
+' ==============================================================================
+package "3. External Liquidity & Settlement Accounts" as PkgExternal #161B22 {
+  class SupplierAccount << (A,#D29922) External Account >> {
+    + id : BigAutoField [PK]
+    + provider : CharField(50) [G2BULK, unique]
+    + name : CharField(100)
+    + api_key : CharField(255) [nullable]
+    + balance_usd : DecimalField(15,4) [default=0.0000]
+    + min_balance_threshold_usd : DecimalField(15,4) [default=500.0000]
+    + account_username : CharField(100) [nullable]
+    + account_uid : CharField(100) [nullable]
+    + is_active : BooleanField [default=True]
+    + last_synced_at : DateTimeField [nullable]
+    + last_error : TextField [nullable]
+    + created_at : DateTimeField [auto_now_add]
+    + updated_at : DateTimeField [auto_now]
+    --
+    + balance_dzd_equivalent() : Decimal [computed property: balance_usd * rate]
+    + is_low_balance() : bool [balance_usd < threshold]
+  }
+
+  class BaridiMobAccount << (A,#D29922) External Account + 3 Proxies >> {
+    + id : BigAutoField [PK]
+    + account_name : CharField(150)
+    + rip_number : CharField(50) [indexed]
+    + system_type : CharField(20) [GAMING | UTILITY | ESIM | ALL]
+    + account_email : CharField(255) [blank]
+    + balance_dzd : DecimalField(18,2) [default=0.00]
+    + last_stable_balance : DecimalField(18,2) [default=0.00]
+    + is_glitch_quarantined : BooleanField [default=False, indexed]
+    + quarantined_glitch_amount : DecimalField(18,2) [default=0.00]
+    + glitch_detected_at : DateTimeField [nullable]
+    + glitch_resolved_at : DateTimeField [nullable]
+    + secret_token : CharField(255) [blank]
+    + devid : CharField(100) [blank]
+    + is_active : BooleanField [default=True]
+    + last_synced_at : DateTimeField [nullable]
+    + created_at : DateTimeField [auto_now_add]
+    + updated_at : DateTimeField [auto_now]
+    --
+    .. Glitch Quarantine Pattern ..
+    * Handles Algérie Poste API state corruption / balance glitches
+    * When quarantined, accounting uses last_stable_balance
+    * Proxies: GamingBaridiMobAccount, UtilityBaridiMobAccount, eSIMBaridiMobAccount
+  }
+
+  class BinanceAccount << (A,#D29922) External Account >> {
+    + id : BigAutoField [PK]
+    + account_name : CharField(150)
+    + merchant_id : CharField(100) [nullable]
+    + balance_usdt : DecimalField(18,4) [default=0.0000]
+    + is_active : BooleanField [default=True]
+    + last_synced_at : DateTimeField [nullable]
+    + last_error : TextField [nullable]
+    + created_at : DateTimeField [auto_now_add]
+    + updated_at : DateTimeField [auto_now]
+    --
+    + balance_dzd_equivalent() : Decimal [computed: balance_usdt * rate]
+    * Serves as settlement bridge: Customer DZD -> USDT -> G2Bulk
+  }
+}
+
+' ==============================================================================
+' 4. CAPITAL FLOWS & WITHDRAWAL STATE MACHINE
+' ==============================================================================
+package "4. Capital Flows (Inflow & Outflow)" as PkgCapital #161B22 {
+  class CapitalEntry << (C,#58A6FF) Inflow Ledger >> {
+    + id : BigAutoField [PK]
+    + title : CharField(200)
+    + category : CharField(20) [GAMING | UTILITY | ESIM | TREASURY | ALL, indexed]
+    + amount_dzd : DecimalField(18,2) [CHECK amount_dzd >= 0]
+    + deposit_date : DateField [default=today, indexed]
+    + source_account : CharField(150) [nullable]
+    # destination_wallet_id : FK -> StellarWallet [nullable]
+    # destination_supplier_id : FK -> SupplierAccount [nullable]
+    # destination_baridimob_id : FK -> BaridiMobAccount [nullable]
+    + binance_txid : CharField(100) [nullable]
+    + binance_verified_amount_usd : DecimalField(18,4) [nullable]
+    + binance_verification_status : CharField(30) [UNVERIFIED | VERIFIED_MATCH | AMOUNT_MISMATCH | NOT_FOUND]
+    + binance_verification_notes : TextField [nullable]
+    + binance_verified_at : DateTimeField [nullable]
+    + notes : TextField [nullable]
+    + created_at : DateTimeField [auto_now_add]
+    + updated_at : DateTimeField [auto_now]
+    --
+    .. Ledger Role ..
+    * Forms RIGHT SIDE of the Golden Balance Equation
+    * Proxies: GamingCapitalEntry, UtilityCapitalEntry, eSIMCapitalEntry
+  }
+
+  class WithdrawalRecord << (W,#F85149) Outflow Machine + 4 Proxies >> {
+    + id : BigAutoField [PK]
+    + title : CharField(200)
+    + purpose_code : CharField(50) [G2BULK_P2P | G2BULK_DIRECT | GAMING_PROFIT_PAYOUT | ...]
+    + system_type : CharField(20) [GAMING | UTILITY | ESIM | TREASURY, indexed]
+    + withdrawal_type : CharField(30) [SUPPLIER_FUNDING | PROFIT_WITHDRAWAL | LIQUIDITY_TRANSFER | OTHER]
+    + amount_dzd : DecimalField(18,2) [CHECK amount_dzd >= 0]
+    + amount_usd_equivalent : DecimalField(15,4) [nullable]
+    + withdrawal_date : DateField [indexed]
+    # source_wallet_id : FK -> StellarWallet [nullable]
+    # source_baridimob_id : FK -> BaridiMobAccount [nullable]
+    # destination_supplier_id : FK -> SupplierAccount [nullable]
+    + destination_recipient : CharField(200) [nullable]
+    + binance_txid : CharField(100) [nullable]
+    + binance_verified_amount_usd : DecimalField(18,4) [nullable]
+    + binance_verification_status : CharField(30)
+    + stage : CharField(30) [ALLOCATED | BINANCE_P2P | COMPLETED | CANCELLED, indexed]
+    + p2p_order_id : CharField(100) [nullable]
+    + p2p_rate : DecimalField(10,2) [nullable]
+    + supplier_pay_id : CharField(100) [nullable]
+    + g2bulk_confirmed_increase_usd : DecimalField(15,4) [nullable]
+    + binance_fee_usd : DecimalField(10,4) [default=0.0000]
+    + binance_fee_dzd : DecimalField(18,2) [default=0.00]
+    + reference : CharField(100) [nullable]
+    + stellar_tx_hash : CharField(100) [nullable]
+    + file_hash : CharField(64) [SHA-256, nullable]
+    + receipt_file : FileField [receipts/]
+    # funding_receipt_id : FK -> BaridiMobFundingReceipt [nullable]
+    + sender_rip : CharField(50) [nullable]
+    + recipient_rip : CharField(50) [nullable]
+    + receipt_amount_dzd : DecimalField(18,2) [nullable]
+    + receipt_verified : BooleanField [default=False]
+    + notes : TextField [nullable]
+    + created_at : DateTimeField [auto_now_add]
+    + updated_at : DateTimeField [auto_now]
+    --
+    .. 3-Stage State Transition Engine ..
+    * Stage 1: ALLOCATED -> Funds reserved/assigned from collection wallet
+    * Stage 2: BINANCE_P2P -> Exchanged for USDT at live P2P rate
+    * Stage 3: COMPLETED -> Credited to Supplier (G2Bulk) or recipient
+    * Abort: CANCELLED -> Unwinds allocation safely
+    * Proxies: GamingWithdrawalRecord, UtilityWithdrawalRecord,
+      eSIMWithdrawalRecord, BinanceP2POperation
+  }
+}
+
+' ==============================================================================
+' 5. FUNDING PIPELINE & RECEIPT PROCESSING
+' ==============================================================================
+package "5. Automated Funding Pipeline" as PkgReceipt #161B22 {
+  class BaridiMobFundingReceipt << (R,#A371F7) Pipeline Trigger >> {
+    + id : BigAutoField [PK]
+    + receipt_file : FileField [receipts/%Y/%m/]
+    + reference : CharField(100) [unique, nullable, indexed]
+    + file_hash : CharField(64) [SHA-256, unique, nullable, indexed]
+    + amount_dzd : DecimalField(18,2) [nullable, parsed via OCR]
+    + fee_dzd : DecimalField(10,2) [default=50.00]
+    + sender_rip : CharField(50) [nullable]
+    + recipient_rip : CharField(50) [nullable]
+    + responsible_person : CharField(100)
+    # source_wallet_id : FK -> StellarWallet [nullable]
+    # destination_wallet_id : FK -> StellarWallet [nullable]
+    + stellar_tx_hash : CharField(100) [nullable]
+    # expense_record_id : FK -> ExpenseRecord [nullable]
+    # supplier_account_id : FK -> SupplierAccount [nullable]
+    # withdrawal_record_id : FK -> WithdrawalRecord [nullable]
+    + binance_order_id : CharField(100) [nullable]
+    + usdt_acquired : DecimalField(18,4) [nullable]
+    + p2p_rate : DecimalField(10,2) [nullable]
+    + usdt_sent_to_g2bulk : DecimalField(18,4) [nullable]
+    + binance_fee_usd : DecimalField(10,4) [default=0.0000]
+    + g2bulk_increase_usd : DecimalField(15,4) [nullable]
+    + status : CharField(30) [PENDING_P2P | P2P_COMPLETED | G2BULK_FUNDED | REJECTED]
+    + raw_text : TextField [nullable, OCR raw buffer]
+    + notes : TextField [nullable]
+    + receipt_date : DateField
+    + created_at : DateTimeField [auto_now_add]
+    + updated_at : DateTimeField [auto_now]
+    --
+    .. 4-Step Pipeline Architecture ..
+    * Step 1: Upload PDF -> SHA-256 duplicate check -> OCR extract RIP/Amount
+    * Step 2: Stellar transfer sweep from Gaming Collection to Central Treasury
+    * Step 3: Automated creation of 50 DZD ExpenseRecord for Postal fee
+    * Step 4: Execute P2P exchange -> Credit G2Bulk supplier balance
+  }
+}
+
+' ==============================================================================
+' 6. EXPENSES, FEES & LOSSES
+' ==============================================================================
+package "6. Operating Expenses & Fee Tracking" as PkgExpense #161B22 {
+  class ExpenseRecord << (E,#FF7B72) Outflow Ledger >> {
+    + id : BigAutoField [PK]
+    + title : CharField(200)
+    + system_type : CharField(20) [GAMING | UTILITY | ESIM | TREASURY, indexed]
+    + category : CharField(30) [BLOCKCHAIN_FEE | BARIDIMOB_FEE | SERVER_PROXY | EXCHANGE_LOSS | REVERSAL_REFUND | OPERATIONAL]
+    + amount_dzd : DecimalField(18,2) [CHECK amount_dzd >= 0]
+    + expense_date : DateField [indexed]
+    # related_wallet_id : FK -> StellarWallet [nullable]
+    # related_supplier_id : FK -> SupplierAccount [nullable]
+    # related_baridimob_id : FK -> BaridiMobAccount [nullable]
+    + reference : CharField(100) [nullable]
+    + notes : TextField [nullable]
+    + created_at : DateTimeField [auto_now_add]
+    + updated_at : DateTimeField [auto_now]
+    --
+    .. Accounting Role ..
+    * Consumed capital: Added to LEFT SIDE of Golden Balance Equation
+    * Proxies: GamingExpenseRecord, UtilityExpenseRecord
+  }
+}
+
+' ==============================================================================
+' 7. REVENUE, SALES & PROFIT MARGINS
+' ==============================================================================
+package "7. Revenue & Operational Profit Units" as PkgRevenue #161B22 {
+  class GameProfitRecord << (P,#3FB950) Revenue Ledger >> {
+    + id : BigAutoField [PK]
+    + order_reference : CharField(100) [unique, indexed]
+    + game_code : CharField(50) [freefire | pubgm | etc.]
+    + game_title : CharField(150) [nullable]
+    + package_name : CharField(150) [nullable]
+    + player_id : CharField(100) [nullable]
+    + cost_price_usd : DecimalField(12,4)
+    + cost_price_dzd : DecimalField(15,2)
+    + sale_price_dzd : DecimalField(15,2)
+    + net_profit_dzd : DecimalField(15,2) [auto-computed]
+    + is_delivered : BooleanField [default=True]
+    + order_date : DateTimeField [indexed]
+    + created_at : DateTimeField [auto_now_add]
+    + updated_at : DateTimeField [auto_now]
+    --
+    .. Integrity Invariant ..
+    * net_profit_dzd = sale_price_dzd - cost_price_dzd (enforced in save())
+    * Contributes directly to RIGHT SIDE (Profits) of Golden Balance
+  }
+
+  class UtilityBillRecord << (U,#3FB950) Settlement Unit >> {
+    + id : BigAutoField [PK]
+    + service : CharField(30) [SONELGAZ | ADE | ALGERIE_TELECOM]
+    + bill_reference : CharField(100) [unique, indexed]
+    + customer_account : CharField(100) [nullable]
+    + bill_amount_dzd : DecimalField(15,2)
+    + commission_earned_dzd : DecimalField(15,2) [default=0.00]
+    + is_settled : BooleanField [default=False]
+    # baridimob_account_id : FK -> BaridiMobAccount [nullable]
+    + payment_date : DateTimeField [indexed]
+    + created_at : DateTimeField [auto_now_add]
+    + updated_at : DateTimeField [auto_now]
+    --
+    .. Service Settlement ..
+    * Manages municipal utility collections (electricity, water, fiber telecom)
+  }
+}
+
+' ==============================================================================
+' 8. BALANCE AUDIT ENGINE (GOLDEN EQUATION)
+' ==============================================================================
+package "8. Institutional Financial Audit Engine" as PkgAudit #161B22 {
+  class BalanceAuditLog << (B,#F0883E) Immutable Financial Audit >> {
+    + id : BigAutoField [PK]
+    + checked_at : DateTimeField [auto_now_add, indexed]
+    -- Left Side Components (Total Assets + Incurred Expenses) --
+    + total_dzt_wallets : DecimalField(18,2)
+    + total_g2bulk_dzd : DecimalField(18,2)
+    + total_baridimob_dzd : DecimalField(18,2)
+    + total_in_transit_dzd : DecimalField(18,2)
+    + total_assets_dzd : DecimalField(18,2)
+    + total_expenses_dzd : DecimalField(18,2)
+    + left_side_total : DecimalField(18,2)
+    -- Right Side Components (Total Liabilities + Injected Capital + Profits) --
+    + total_capital_dzd : DecimalField(18,2)
+    + total_profits_dzd : DecimalField(18,2)
+    + right_side_total : DecimalField(18,2)
+    -- Mathematical Audit Discrepancy --
+    + discrepancy_dzd : DecimalField(18,2)
+    + status : CharField(30) [BALANCED | DISCREPANCY_DETECTED, indexed]
+    + notes : TextField [nullable]
+    --
+    .. The Golden Balance Mathematical Law ..
+    * LEFT_SIDE = Stellar DZT + G2Bulk DZD + Binance USDT(DZD) + BaridiMob + In-Transit + Expenses
+    * RIGHT_SIDE = Capital Injections + Cumulative Net Profits
+    * Discrepancy = LEFT_SIDE - RIGHT_SIDE
+    * BALANCED if Discrepancy == 0.00, otherwise DISCREPANCY_DETECTED
+  }
+}
+
+' ==============================================================================
+' 9. FORENSIC AUDITING & OPERATOR GOVERNANCE
+' ==============================================================================
+package "9. Forensic Audit Trail & Staff Governance" as PkgStaff #161B22 {
+  class StaffOperator << (O,#79C0FF) Staff Entity >> {
+    + id : BigAutoField [PK]
+    + employee_code : CharField(50) [unique, indexed]
+    + full_name : CharField(150)
+    + username : CharField(150) [unique]
+    + email : EmailField [unique]
+    + mission_role : CharField(30) [GAME_OPERATOR | FACTURE_OPERATOR | ESIM_OPERATOR | TREASURY_OFFICER | AUDITOR | ALL_FAMILIES]
+    + status : CharField(20) [ACTIVE | SUSPENDED | ON_LEAVE]
+    + phone_number : CharField(30) [nullable]
+    # linked_user_id : OneToOneField -> auth.User [CASCADE, nullable]
+    + is_active : BooleanField [default=True]
+    + last_activity_at : DateTimeField [nullable]
+    + notes : TextField [nullable]
+    + created_at : DateTimeField [auto_now_add]
+    + updated_at : DateTimeField [auto_now]
+    --
+    * employee_code auto-generated: EMP-XXX-RandomHex
+    * Strictly restricts operator access to assigned family domain
+  }
+
+  class OperatorActionLog << (A,#8B949E) Audit Trail >> {
+    + id : BigAutoField [PK]
+    + timestamp : DateTimeField [auto_now_add, indexed]
+    # operator_id : FK -> auth.User [nullable, SET_NULL]
+    + operator_username : CharField(150) [indexed]
+    + operator_family : CharField(50) [nullable]
+    + action_type : CharField(20) [CREATE | UPDATE | DELETE | ACTION_EXECUTE]
+    + target_model : CharField(100) [indexed]
+    + object_id : CharField(100) [nullable]
+    + object_repr : CharField(255)
+    + changes_summary : TextField [JSON diff payload]
+    + ip_address : GenericIPAddressField [nullable]
+    + user_agent : TextField [nullable]
+    --
+    * Full JSON before/after state diff captured on every mutation
+  }
+
+  class LoginAuditLog << (A,#8B949E) Security Log >> {
+    + id : BigAutoField [PK]
+    + username : CharField(150) [indexed]
+    # user_id : FK -> auth.User [nullable, SET_NULL]
+    + ip_address : GenericIPAddressField [nullable]
+    + user_agent : TextField [nullable]
+    + is_success : BooleanField [indexed]
+    + failure_reason : CharField(255) [nullable]
+    + timestamp : DateTimeField [auto_now_add, indexed]
+    --
+    * Tracks failed and successful brute-force and IP signatures
+  }
+
+  class "auth.User" as DjangoUser << (U,#79C0FF) Django Core >> {
+    + id : PK
+    + username : CharField
+    + email : EmailField
+    + is_staff : BooleanField
+    + is_superuser : BooleanField
+  }
+}
+
+' ==============================================================================
+' RELATIONSHIPS & FOREIGN KEYS
+' ==============================================================================
+
+' Global Settings Routing
+MonitoringGlobalSettings --> StellarWallet : "games_collection_wallet\n(Central Games DZT Inflow)"
+MonitoringGlobalSettings --> StellarWallet : "central_treasury_wallet\n(Master Vault Target)"
+
+' Stellar Sweeps
+WalletSweepLog --> StellarWallet : "source_wallet"
+WalletSweepLog --> StellarWallet : "destination_wallet"
+
+' Capital Entries
+CapitalEntry --> StellarWallet : "destination_wallet"
+CapitalEntry --> SupplierAccount : "destination_supplier"
+CapitalEntry --> BaridiMobAccount : "destination_baridimob"
+
+' Withdrawal Record Flow
+WithdrawalRecord --> StellarWallet : "source_wallet"
+WithdrawalRecord --> BaridiMobAccount : "source_baridimob"
+WithdrawalRecord --> SupplierAccount : "destination_supplier"
+WithdrawalRecord --> BaridiMobFundingReceipt : "funding_receipt"
+
+' Funding Pipeline Links
+BaridiMobFundingReceipt --> StellarWallet : "source_wallet"
+BaridiMobFundingReceipt --> StellarWallet : "destination_wallet"
+BaridiMobFundingReceipt --> ExpenseRecord : "expense_record\n(50 DZD Postal Fee)"
+BaridiMobFundingReceipt --> SupplierAccount : "supplier_account\n(G2Bulk USD Target)"
+BaridiMobFundingReceipt --> WithdrawalRecord : "withdrawal_record\n(Outflow Trigger)"
+
+' Expenses Relations
+ExpenseRecord --> StellarWallet : "related_wallet"
+ExpenseRecord --> SupplierAccount : "related_supplier"
+ExpenseRecord --> BaridiMobAccount : "related_baridimob"
+
+' Revenue & Bills
+UtilityBillRecord --> BaridiMobAccount : "baridimob_account\n(Settlement Source)"
+
+' Governance & User Links
+StaffOperator --> DjangoUser : "linked_user\n(1-to-1)"
+OperatorActionLog --> DjangoUser : "operator"
+LoginAuditLog --> DjangoUser : "user"
+
+' ==============================================================================
+' ARCHITECTURAL SUMMARY NOTES
+' ==============================================================================
+note as N1
+  <b>CORE FINTECH & DOUBLE-ENTRY RULES</b>
+  <b>1. Golden Balance Equation</b>:
+     Assets + Expenses = Capital Injections + Accumulated Profits
+     Any nonzero discrepancy triggers DISCREPANCY_DETECTED in BalanceAuditLog.
+  <b>2. Glitch Quarantine System</b>:
+     BaridiMob accounts can be quarantined if Algerian Post API exhibits anomalies;
+     system automatically rolls back to last_stable_balance for financial calculations.
+  <b>3. Proxy Pattern</b>:
+     Heavy use of Django proxy models on StellarWallet, BaridiMobAccount,
+     CapitalEntry, and WithdrawalRecord to provide family-partitioned administrative views.
+  <b>4. Multi-Stage Settlement</b>:
+     Withdrawals transition deterministically through ALLOCATED -> BINANCE_P2P -> COMPLETED.
+end note
+
+@enduml

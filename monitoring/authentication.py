@@ -55,7 +55,7 @@ class CombinedAPIKeyOrJWTAuthentication(BaseAuthentication):
             str(os.getenv('MASTER_ADMIN_API_KEY', '')).strip(),
             str(os.getenv('SOFIZPAY_ADMIN_API_KEY', '')).strip(),
             str(os.getenv('PRODUCTS_API_KEY', '')).strip(),
-            'sk_live_sofiz_fin_8f93e1b072c449a8bb63920e5c1d84f7',
+            'sk_sofizadmin_live_52041594509c51cd5cda405b244d9b703e684225473e63164ab614c681de7779',
             '23a87961eca6be3443d760b38224c1007110bc46440d7259',
         }
         from django.conf import settings as dj_settings

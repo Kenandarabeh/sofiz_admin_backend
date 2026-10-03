@@ -167,7 +167,7 @@ class MonitoringGlobalSettings(models.Model):
         verbose_name="Exchange Rate (1 USD = X DZT/DZD)"
     )
     epay_api_url = models.CharField(max_length=255, default="https://epay.sofizpay.com/api/operations", verbose_name="Epay API URL")
-    epay_api_key = models.CharField(max_length=255, default="sk_live_sofiz_fin_8f93e1b072c449a8bb63920e5c1d84f7", verbose_name="Epay API Key (X-API-KEY)")
+    epay_api_key = models.CharField(max_length=255, default="sk_sofizadmin_live_52041594509c51cd5cda405b244d9b703e684225473e63164ab614c681de7779", verbose_name="Epay API Key (X-API-KEY)")
     binance_api_key = models.CharField(max_length=255, blank=True, null=True, verbose_name="Binance API Key")
     binance_api_secret = models.CharField(max_length=255, blank=True, null=True, verbose_name="Binance API Secret")
     binance_merchant_id = models.CharField(max_length=100, blank=True, null=True, verbose_name="Binance Merchant ID / Pay ID")
@@ -180,6 +180,20 @@ class MonitoringGlobalSettings(models.Model):
         default=Decimal("500.0000"),
         verbose_name="G2Bulk Minimum Balance Threshold (USD $)",
         help_text="Configured by Super Administrator. Triggers replenishment alert if live balance drops below this amount."
+    )
+    gaming_baridimob_min_threshold_dzd = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        default=Decimal("10000.00"),
+        verbose_name="Gaming Account Refill Alert Threshold (DZD)",
+        help_text="Configured in Django Admin. Triggers replenishment alert when Gaming operational BaridiMob account balance drops below this amount."
+    )
+    utility_baridimob_min_threshold_dzd = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        default=Decimal("10000.00"),
+        verbose_name="Factures Account Refill Alert Threshold (DZD)",
+        help_text="Configured in Django Admin. Triggers replenishment alert when Factures operational BaridiMob account balance drops below this amount."
     )
     is_auto_sync_enabled = models.BooleanField(default=True, verbose_name="Auto Sync Enabled")
     last_global_sync = models.DateTimeField(null=True, blank=True, verbose_name="Last Global Sync")
@@ -389,7 +403,6 @@ class StellarWallet(models.Model):
     public_address = models.CharField(max_length=100, unique=True, db_index=True, verbose_name="Stellar Public Address (G...)")
     secret_seed = models.CharField(max_length=100, blank=True, null=True, verbose_name="Stellar Secret Seed (S...)")
     dzt_balance = models.DecimalField(max_digits=18, decimal_places=4, default=Decimal("0.0000"), verbose_name="Live DZT Balance")
-    xlm_balance = models.DecimalField(max_digits=18, decimal_places=4, default=Decimal("0.0000"), verbose_name="XLM Balance (Network Gas)")
     is_active = models.BooleanField(default=True, db_index=True, verbose_name="Is Active")
     last_synced_at = models.DateTimeField(null=True, blank=True, verbose_name="Last Synced At")
     last_error = models.TextField(null=True, blank=True, verbose_name="Last Sync Error")
@@ -467,7 +480,7 @@ class StellarWallet(models.Model):
     def save(self, *args, **kwargs):
         # Enforce clean validation unless explicitly updating purely live telemetry fields
         update_fields = kwargs.get('update_fields')
-        telemetry_fields = {'dzt_balance', 'xlm_balance', 'last_synced_at', 'last_error', 'updated_at'}
+        telemetry_fields = {'dzt_balance', 'last_synced_at', 'last_error', 'updated_at'}
         if update_fields is None or not set(update_fields).issubset(telemetry_fields):
             self.clean()
 
@@ -717,6 +730,13 @@ class BaridiMobAccount(models.Model):
     )
     account_email = models.CharField(max_length=150, default="Sihaam31", blank=True, verbose_name="Username / Email")
     balance_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Live Balance (DZD)")
+    min_balance_threshold_dzd = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        default=Decimal("10000.00"),
+        verbose_name="Minimum Balance Alert Threshold (DZD)",
+        help_text="Configured in Django Admin. When balance drops below this amount, a refill warning is raised."
+    )
     last_stable_balance = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Last Verified Stable Balance (DZD)")
     is_glitch_quarantined = models.BooleanField(default=False, db_index=True, verbose_name="Algérie Poste Glitch Quarantined")
     quarantined_glitch_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Reported Glitch Balance (DZD)")
@@ -737,6 +757,40 @@ class BaridiMobAccount(models.Model):
 
     def __str__(self):
         return f"[{self.get_system_type_display()}] {self.account_name} (RIP: {self.rip_number})"
+
+
+class BaridiMobTransaction(models.Model):
+    """Permanent archival ledger for BaridiMob account transactions (Inflows, Outflows, Bill Payments)"""
+    account = models.ForeignKey(
+        BaridiMobAccount,
+        on_delete=models.CASCADE,
+        related_name='transactions',
+        verbose_name="BaridiMob Account"
+    )
+    tid = models.CharField(max_length=100, db_index=True, verbose_name="Transaction ID (tid)")
+    ref_num = models.CharField(max_length=100, db_index=True, blank=True, null=True, verbose_name="Reference Number (refNum)")
+    amount = models.DecimalField(max_digits=18, decimal_places=2, verbose_name="Amount (DZD)")
+    fee_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"), verbose_name="Postal / Bank Fee Surcharge (DZD)")
+    transaction_type = models.CharField(max_length=150, default="GENERIC", db_index=True, verbose_name="Transaction Type / Operation")
+    operation_code = models.CharField(max_length=50, blank=True, null=True, db_index=True, verbose_name="Operation Code (Algérie Poste)")
+    is_bank_fee = models.BooleanField(default=False, db_index=True, verbose_name="Is Postal / Bank Deduction (Not Client Bill)")
+    description = models.CharField(max_length=255, blank=True, null=True, verbose_name="Description / Statement")
+    available_balance = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True, verbose_name="Available Balance (DZD)")
+    transaction_date = models.DateTimeField(db_index=True, verbose_name="Transaction Timestamp")
+    raw_data = models.JSONField(default=dict, blank=True, verbose_name="Full Epay / BaridiMob Raw Payload")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "BaridiMob Transaction Record"
+        verbose_name_plural = "BaridiMob Transaction Records"
+        ordering = ['-transaction_date', '-id']
+        constraints = [
+            models.UniqueConstraint(fields=['account', 'tid'], name='unique_baridimob_account_tid')
+        ]
+
+    def __str__(self):
+        return f"[{self.account.account_name}] #{self.tid} | {self.amount:+,.2f} DZD ({self.transaction_date.strftime('%Y-%m-%d %H:%M')})"
 
 
 class GamingBaridiMobManager(models.Manager):
@@ -961,6 +1015,8 @@ class WithdrawalRecord(models.Model):
     )
     p2p_order_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="Binance P2P Order ID")
     p2p_rate = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, verbose_name="P2P Unit Rate (DZD/USDT)")
+    binance_pay_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="Binance Pay Transaction ID")
+    g2bulk_transaction_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="G2Bulk Deposit Transaction ID")
     supplier_pay_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="Binance Pay ID / G2Bulk Reference")
     g2bulk_confirmed_increase_usd = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True, verbose_name="G2Bulk Confirmed Increase ($ USD)")
     binance_fee_usd = models.DecimalField(max_digits=12, decimal_places=4, default=Decimal("0.0000"), verbose_name="Binance Transfer / Network Fee ($ USD)")
