@@ -78,8 +78,8 @@ class CreateStaffMemberSerializer(serializers.Serializer):
         required=True,
         allow_blank=False,
         error_messages={
-            'required': 'رقم هاتف الواتساب إلزامي للموظف لإرسال التذكيرات.',
-            'blank': 'رقم هاتف الواتساب لا يمكن أن يكون فارغاً.'
+            'required': 'WhatsApp phone number is required to send reminders.',
+            'blank': 'WhatsApp phone number cannot be blank.'
         }
     )
     notes = serializers.CharField(required=False, allow_blank=True, default='')
@@ -87,13 +87,13 @@ class CreateStaffMemberSerializer(serializers.Serializer):
     def validate_username(self, value):
         val = value.strip()
         if User.objects.filter(username__iexact=val).exists():
-            raise serializers.ValidationError('اسم المستخدم هذا مستخدم بالفعل.')
+            raise serializers.ValidationError('This username is already taken.')
         return val
 
     def validate_email(self, value):
         val = value.strip().lower()
         if User.objects.filter(email__iexact=val).exists():
-            raise serializers.ValidationError('البريد الإلكتروني هذا مستخدم بالفعل.')
+            raise serializers.ValidationError('This email address is already in use.')
         return val
 
 

@@ -13,21 +13,21 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='task',
             name='due_time',
-            field=models.TimeField(blank=True, help_text='توقيت الموعد أو المناسبة', null=True),
+            field=models.TimeField(blank=True, help_text='Time of event or meeting', null=True),
         ),
         migrations.AddField(
             model_name='task',
             name='item_type',
-            field=models.CharField(choices=[('TASK', 'مهمة عمل'), ('EVENT', 'مناسبة / حدث'), ('MEETING', 'موعد / لقاء')], db_index=True, default='TASK', help_text='نوع العنصر (مهمة عمل أو مناسبة أو موعد)', max_length=20),
+            field=models.CharField(choices=[('TASK', 'Task'), ('EVENT', 'Event'), ('MEETING', 'Meeting')], db_index=True, default='TASK', help_text='Item category (Task, Event, or Meeting)', max_length=20),
         ),
         migrations.AddField(
             model_name='task',
             name='whatsapp_phone',
-            field=models.CharField(blank=True, default='', help_text='رقم الواتساب للتذكير', max_length=40),
+            field=models.CharField(blank=True, default='', help_text='WhatsApp phone number for reminders', max_length=40),
         ),
         migrations.AddField(
             model_name='task',
             name='whatsapp_sent_at',
-            field=models.DateTimeField(blank=True, help_text='تاريخ ووقت إرسال تذكير الواتساب', null=True),
+            field=models.DateTimeField(blank=True, help_text='Timestamp of sent WhatsApp reminder', null=True),
         ),
     ]

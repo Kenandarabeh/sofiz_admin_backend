@@ -332,7 +332,7 @@ class TaskViewSet(viewsets.ModelViewSet):
             phone = profile.phone_number if profile else ''
 
         if not phone:
-            return Response({'error': 'لم يتم العثور على رقم هاتف واتساب للتذكير'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'No WhatsApp phone number found for reminder.'}, status=status.HTTP_400_BAD_REQUEST)
 
         custom_message = request.data.get('message')
         result = send_task_whatsapp_reminder_sync(task, target_phone=phone, custom_message=custom_message, user=request.user)
@@ -466,7 +466,7 @@ class TeamMembersAPIView(APIView):
     def post(self, request):
         if not (request.user.is_staff or request.user.is_superuser):
             return Response(
-                {'error': 'عذراً، يجب أن تمتلك صلاحيات إدارية (Admin) لإنشاء موظفين جدد.'},
+                {'error': 'Administrative privileges (Admin) required to create new staff members.'},
                 status=status.HTTP_403_FORBIDDEN
             )
 
@@ -514,7 +514,7 @@ class TeamMembersAPIView(APIView):
         return Response(
             {
                 'success': True,
-                'message': f'تم إنشاء الموظف {full_name} بنجاح وتعيين الصلاحيات.',
+                'message': f'Staff member {full_name} created successfully with assigned permissions.',
                 'user': UserSummarySerializer(user).data,
                 'employee_code': staff.employee_code,
                 'assigned_groups': assigned_groups,

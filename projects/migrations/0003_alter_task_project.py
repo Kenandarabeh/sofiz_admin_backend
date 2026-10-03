@@ -14,6 +14,6 @@ class Migration(migrations.Migration):
         migrations.AlterField(
             model_name='task',
             name='project',
-            field=models.ForeignKey(blank=True, help_text='المشروع التابع له (اختياري للمناسبات والمواعيد)', null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='tasks', to='projects.project'),
+            field=models.ForeignKey(blank=True, help_text='Associated project (optional for events and meetings)', null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='tasks', to='projects.project'),
         ),
     ]

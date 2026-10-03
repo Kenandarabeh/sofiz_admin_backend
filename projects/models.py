@@ -6,43 +6,43 @@ from django.contrib.auth.models import User
 
 
 class ProjectStatus(models.TextChoices):
-    PLANNING = 'PLANNING', 'Planning (قيد التخطيط)'
-    IN_PROGRESS = 'IN_PROGRESS', 'In Progress (قيد التنفيذ)'
-    COMPLETED = 'COMPLETED', 'Completed (مكتمل)'
-    ON_HOLD = 'ON_HOLD', 'On Hold (معلق)'
-    ARCHIVED = 'ARCHIVED', 'Archived (مؤرشف)'
+    PLANNING = 'PLANNING', 'Planning'
+    IN_PROGRESS = 'IN_PROGRESS', 'In Progress'
+    COMPLETED = 'COMPLETED', 'Completed'
+    ON_HOLD = 'ON_HOLD', 'On Hold'
+    ARCHIVED = 'ARCHIVED', 'Archived'
 
 
 class ProjectPriority(models.TextChoices):
-    LOW = 'LOW', 'Low (منخفض)'
-    MEDIUM = 'MEDIUM', 'Medium (متوسط)'
-    HIGH = 'HIGH', 'High (عالي)'
-    URGENT = 'URGENT', 'Urgent (عاجل جدا)'
+    LOW = 'LOW', 'Low'
+    MEDIUM = 'MEDIUM', 'Medium'
+    HIGH = 'HIGH', 'High'
+    URGENT = 'URGENT', 'Urgent'
 
 
 class TaskStatus(models.TextChoices):
-    TODO = 'TODO', 'To Do (قيد الانتظار)'
-    IN_PROGRESS = 'IN_PROGRESS', 'In Progress (قيد التنفيذ)'
-    IN_REVIEW = 'IN_REVIEW', 'In Review (قيد المراجعة)'
-    DONE = 'DONE', 'Done (مكتمل)'
+    TODO = 'TODO', 'To Do'
+    IN_PROGRESS = 'IN_PROGRESS', 'In Progress'
+    IN_REVIEW = 'IN_REVIEW', 'In Review'
+    DONE = 'DONE', 'Done'
 
 
 class TaskPriority(models.TextChoices):
-    LOW = 'LOW', 'Low (منخفضة)'
-    MEDIUM = 'MEDIUM', 'Medium (متوسطة)'
-    HIGH = 'HIGH', 'High (عالية)'
-    URGENT = 'URGENT', 'Urgent (عاجلة جدا)'
+    LOW = 'LOW', 'Low'
+    MEDIUM = 'MEDIUM', 'Medium'
+    HIGH = 'HIGH', 'High'
+    URGENT = 'URGENT', 'Urgent'
 
 
 class Project(models.Model):
-    name = models.CharField(max_length=200, help_text='اسم المشروع')
+    name = models.CharField(max_length=200, help_text='Project name')
     key = models.CharField(
         max_length=10,
         unique=True,
         db_index=True,
-        help_text='رمز المشروع المختصر (مثل SOF, FIN, OPS)'
+        help_text='Short project key identifier (e.g. SOF, FIN, OPS)'
     )
-    description = models.TextField(blank=True, help_text='وصف المشروع وأهدافه')
+    description = models.TextField(blank=True, help_text='Project description and objectives')
     status = models.CharField(
         max_length=20,
         choices=ProjectStatus.choices,
@@ -54,14 +54,14 @@ class Project(models.Model):
         choices=ProjectPriority.choices,
         default=ProjectPriority.MEDIUM
     )
-    color = models.CharField(max_length=30, default='#3B82F6', help_text='لون السمة للمشروع (HEX)')
+    color = models.CharField(max_length=30, default='#3B82F6', help_text='Project theme color (HEX)')
     lead = models.ForeignKey(
         User,
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
         related_name='led_projects',
-        help_text='مدير أو قائد المشروع'
+        help_text='Project manager or lead'
     )
     created_by = models.ForeignKey(
         User,
@@ -74,7 +74,7 @@ class Project(models.Model):
         User,
         blank=True,
         related_name='assigned_projects',
-        help_text='أعضاء الفريق المساهمين في المشروع'
+        help_text='Team members collaborating on the project'
     )
     start_date = models.DateField(null=True, blank=True)
     target_date = models.DateField(null=True, blank=True)
@@ -125,17 +125,17 @@ class Task(models.Model):
         blank=True,
         on_delete=models.SET_NULL,
         related_name='tasks',
-        help_text='المشروع التابع له (اختياري للمناسبات والمواعيد)'
+        help_text='Associated project (optional for events and meetings)'
     )
     task_key = models.CharField(
         max_length=30,
         unique=True,
         db_index=True,
         blank=True,
-        help_text='معرف المهمة التلقائي (مثل SOF-1)'
+        help_text='Automatic task key (e.g. SOF-1)'
     )
-    title = models.CharField(max_length=255, help_text='عنوان المهمة')
-    description = models.TextField(blank=True, help_text='تفاصيل المهمة ومتطلباتها')
+    title = models.CharField(max_length=255, help_text='Task title')
+    description = models.TextField(blank=True, help_text='Task details and specifications')
     status = models.CharField(
         max_length=20,
         choices=TaskStatus.choices,
@@ -154,7 +154,7 @@ class Task(models.Model):
         blank=True,
         on_delete=models.SET_NULL,
         related_name='assigned_tasks',
-        help_text='الشخص المكلف بالمهمة'
+        help_text='Assigned operator/staff'
     )
     reporter = models.ForeignKey(
         User,
@@ -162,25 +162,25 @@ class Task(models.Model):
         blank=True,
         on_delete=models.SET_NULL,
         related_name='reported_tasks',
-        help_text='مُنشئ المهمة أو المبلّغ عنها'
+        help_text='Task reporter/creator'
     )
-    due_date = models.DateField(null=True, blank=True, help_text='تاريخ الاستحقاق أو التسليم')
-    due_time = models.TimeField(null=True, blank=True, help_text='توقيت الموعد أو المناسبة')
+    due_date = models.DateField(null=True, blank=True, help_text='Due date or deadline')
+    due_time = models.TimeField(null=True, blank=True, help_text='Time of event or meeting')
     item_type = models.CharField(
         max_length=20,
         default='TASK',
         choices=[
-            ('TASK', 'مهمة عمل'),
-            ('EVENT', 'مناسبة / حدث'),
-            ('MEETING', 'موعد / لقاء'),
+            ('TASK', 'Task'),
+            ('EVENT', 'Event'),
+            ('MEETING', 'Meeting'),
         ],
         db_index=True,
-        help_text='نوع العنصر (مهمة عمل أو مناسبة أو موعد)'
+        help_text='Item category (Task, Event, or Meeting)'
     )
-    whatsapp_phone = models.CharField(max_length=40, blank=True, default='', help_text='رقم الواتساب للتذكير')
-    whatsapp_sent_at = models.DateTimeField(null=True, blank=True, help_text='تاريخ ووقت إرسال تذكير الواتساب')
-    tags = models.JSONField(default=list, blank=True, help_text='وسوم وتصنيفات فرعية للمهمة')
-    order = models.PositiveIntegerField(default=0, help_text='ترتيب المهمة داخل العمود')
+    whatsapp_phone = models.CharField(max_length=40, blank=True, default='', help_text='WhatsApp phone number for reminders')
+    whatsapp_sent_at = models.DateTimeField(null=True, blank=True, help_text='Timestamp of sent WhatsApp reminder')
+    tags = models.JSONField(default=list, blank=True, help_text='Sub-tags and categories')
+    order = models.PositiveIntegerField(default=0, help_text='Task ordering index inside column')
     estimated_hours = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal('0.00'))
     logged_hours = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal('0.00'))
     completed_at = models.DateTimeField(null=True, blank=True)
@@ -240,7 +240,7 @@ class Task(models.Model):
 class TaskComment(models.Model):
     task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name='comments')
     author = models.ForeignKey(User, on_delete=models.CASCADE, related_name='task_comments')
-    content = models.TextField(help_text='نص التعليق')
+    content = models.TextField(help_text='Comment text content')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -256,8 +256,8 @@ class TaskComment(models.Model):
 class TaskActivityLog(models.Model):
     task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name='activity_logs')
     user = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL)
-    action = models.CharField(max_length=60, help_text='نوع الإجراء (مثل: STATUS_CHANGE, ASSIGNMENT)')
-    details = models.JSONField(default=dict, blank=True, help_text='تفاصيل التغيير')
+    action = models.CharField(max_length=60, help_text='Action type (e.g. STATUS_CHANGE, ASSIGNMENT)')
+    details = models.JSONField(default=dict, blank=True, help_text='Activity details payload')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -267,3 +267,4 @@ class TaskActivityLog(models.Model):
 
     def __str__(self):
         return f'[{self.action}] on {self.task.task_key} at {self.created_at}'
+

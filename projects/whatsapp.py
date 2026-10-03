@@ -10,9 +10,9 @@ from django.utils import timezone
 logger = logging.getLogger(__name__)
 
 ITEM_TYPE_LABELS = {
-    'TASK': 'مهمة عمل (Task)',
-    'EVENT': 'مناسبة / حدث (Event)',
-    'MEETING': 'موعد / لقاء (Meeting)',
+    'TASK': 'Task',
+    'EVENT': 'Event',
+    'MEETING': 'Meeting',
 }
 
 
@@ -49,7 +49,7 @@ def send_whatsapp_message(phone: str, text: str) -> dict:
     """
     chat_id = normalize_phone_to_chat_id(phone)
     if not chat_id:
-        return {'success': False, 'error': f'رقم الهاتف غير صالح: {phone}'}
+        return {'success': False, 'error': f'Invalid phone number: {phone}'}
 
     base_url = getattr(settings, 'OPENWA_BASE_URL', 'https://whats.sofizpay.com').rstrip('/')
     api_key = getattr(settings, 'OPENWA_API_KEY', '')
@@ -89,17 +89,17 @@ def send_whatsapp_message(phone: str, text: str) -> dict:
 
 def format_calendar_reminder_message(task, custom_note=None) -> str:
     """
-    Formats a modern Arabic WhatsApp reminder for an appointment, event, or task.
+    Formats an institutional WhatsApp reminder for an appointment, event, or task.
     """
     item_type = getattr(task, 'item_type', 'TASK')
-    type_label = ITEM_TYPE_LABELS.get(item_type, 'موعد / مناسبة')
+    type_label = ITEM_TYPE_LABELS.get(item_type, 'Event / Appointment')
     
     type_emoji = '📅' if item_type == 'EVENT' else ('🤝' if item_type == 'MEETING' else '📌')
     
-    project_name = task.project.name if task.project else 'العام'
-    assignee_name = (task.assignee.get_full_name() or task.assignee.username) if task.assignee else 'فريق العمل'
+    project_name = task.project.name if task.project else 'General'
+    assignee_name = (task.assignee.get_full_name() or task.assignee.username) if task.assignee else 'Team Member'
     
-    date_str = task.due_date.strftime('%Y-%m-%d') if task.due_date else 'اليوم'
+    date_str = task.due_date.strftime('%Y-%m-%d') if task.due_date else 'Today'
     
     due_time_str = ''
     if hasattr(task, 'due_time') and task.due_time:
@@ -107,36 +107,36 @@ def format_calendar_reminder_message(task, custom_note=None) -> str:
     elif isinstance(task.tags, dict) and task.tags.get('time'):
         due_time_str = str(task.tags.get('time'))
     
-    time_display = f'الساعة {due_time_str}' if due_time_str else 'طوال اليوم'
+    time_display = f'At {due_time_str}' if due_time_str else 'All Day'
     
     frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:5173').rstrip('/')
     cta_url = f'{frontend_url}/projects'
 
     lines = [
-        f'{type_emoji} *تذكير بـ {type_label} - منصة Sofiz*',
+        f'{type_emoji} *Reminder: {type_label} - Sofiz Platform*',
         '━━━━━━━━━━━━━━━━━━━━━',
-        f'📌 *العنوان:* {task.title}',
-        f'🗓️ *التاريخ:* {date_str}',
-        f'⏰ *التوقيت:* {time_display}',
+        f'📌 *Title:* {task.title}',
+        f'🗓️ *Date:* {date_str}',
+        f'⏰ *Time:* {time_display}',
     ]
     if task.project:
-        lines.append(f'📁 *المشروع / القسم:* {task.project.name}')
-    lines.append(f'👤 *المعني:* {assignee_name}')
+        lines.append(f'📁 *Project / Department:* {task.project.name}')
+    lines.append(f'👤 *Assignee:* {assignee_name}')
 
     if task.description:
         lines.append('')
-        lines.append('📝 *التفاصيل:*')
+        lines.append('📝 *Details:*')
         lines.append(task.description.strip())
 
     if custom_note:
         lines.append('')
-        lines.append('💡 *ملاحظة إضافية:*')
+        lines.append('💡 *Additional Note:*')
         lines.append(custom_note.strip())
 
     lines.extend([
         '━━━━━━━━━━━━━━━━━━━━━',
-        f'🔗 *الرابط في التقويم:* {cta_url}',
-        '⚡ _تم الإرسال تلقائياً عبر نظام إدارة المهام والمواعيد Sofiz_'
+        f'🔗 *Calendar Link:* {cta_url}',
+        '⚡ _Dispatched automatically via Sofiz Task & Operations Engine_'
     ])
 
     return '\n'.join(lines)
@@ -154,7 +154,7 @@ def send_task_whatsapp_reminder_sync(task, target_phone=None, custom_message=Non
         phone = profile.phone_number if profile else ''
 
     if not phone:
-        return {'success': False, 'error': 'لم يتم تحديد رقم هاتف للتذكير'}
+        return {'success': False, 'error': 'No reminder phone number specified.'}
 
     text = custom_message if custom_message else format_calendar_reminder_message(task)
     result = send_whatsapp_message(phone, text)
