@@ -23,6 +23,7 @@ INSTALLED_APPS = [
     'corsheaders',
     # Local Apps
     'monitoring.apps.MonitoringConfig',
+    'projects.apps.ProjectsConfig',
 ]
 
 MIDDLEWARE = [
@@ -112,7 +113,8 @@ EMAIL_PORT = int(os.getenv('EMAIL_PORT', 587))
 EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'True') == 'True'
 EMAIL_USE_SSL = os.getenv('EMAIL_USE_SSL', 'False') == 'True'
 EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', 'eurlsofizpay@gmail.com')
-EMAIL_HOST_PASSWORD = os.getenv('EMAIL_PASSWORD', os.getenv('EMAIL_HOST_PASSWORD', ''))
+_raw_email_pass = os.getenv('EMAIL_PASSWORD', os.getenv('EMAIL_HOST_PASSWORD', 'gdjjabmkujkfwjzy'))
+EMAIL_HOST_PASSWORD = _raw_email_pass.replace(' ', '') if _raw_email_pass else 'gdjjabmkujkfwjzy'
 DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'eurlsofizpay@gmail.com')
 DEFAULT_ERROR_ALERT_EMAIL = os.getenv('DEFAULT_ERROR_ALERT_EMAIL', 'rabeh2020ken@gmail.com')
 ADMIN_ALERT_EMAILS = [e.strip() for e in os.getenv('ADMIN_ALERT_EMAILS', 'rabeh2020ken@gmail.com,admin@sofizpay.com').split(',') if e.strip()]
@@ -154,5 +156,7 @@ SIMPLE_JWT = {
     'USER_ID_CLAIM': 'user_id',
     'AUTH_TOKEN_CLASSES': ('rest_framework_simplejwt.tokens.AccessToken',),
 }
-
-
+# OpenWA WhatsApp Configuration
+OPENWA_BASE_URL = os.getenv('OPENWA_BASE_URL', 'https://whats.sofizpay.com')
+OPENWA_API_KEY = os.getenv('OPENWA_API_KEY', 'owa_k1_b76726a2ba218f3af77e6a84f82eb4c00fc7e1290ad714bd9d0739b10d7961cc')
+OPENWA_SESSION_ID = os.getenv('OPENWA_SESSION_ID', '5169c587-641a-46c3-a6a2-4bd4329439ae')

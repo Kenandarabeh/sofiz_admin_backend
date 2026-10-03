@@ -7,6 +7,7 @@ from django.shortcuts import redirect
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include('monitoring.api_urls')),
+    path('api/projects/', include('projects.urls')),
     path('', include('monitoring.urls')),
     path('', lambda request: redirect('admin:index')),
 ]

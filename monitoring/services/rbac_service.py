@@ -80,21 +80,40 @@ class RBACService:
     }
 
     @classmethod
+    def assign_multiple_mission_roles(cls, user, mission_roles):
+        """Assigns multiple institutional Groups to the user based on their mission roles list."""
+        cls.provision_institutional_roles()
+        if isinstance(mission_roles, str):
+            mission_roles = [r.strip() for r in mission_roles.split(',') if r.strip()]
+        elif not isinstance(mission_roles, (list, tuple, set)):
+            mission_roles = [mission_roles] if mission_roles else []
+
+        assigned_groups = []
+        has_super = False
+
+        for m_role in mission_roles:
+            group_name = cls.ROLE_MAPPING.get(m_role)
+            if group_name:
+                group = Group.objects.filter(name=group_name).first()
+                if group and group not in assigned_groups:
+                    assigned_groups.append(group)
+            if m_role == 'ALL_FAMILIES' or group_name == 'Super Administrator':
+                has_super = True
+
+        user.groups.clear()
+        if assigned_groups:
+            user.groups.add(*assigned_groups)
+
+        user.is_superuser = has_super
+        user.is_staff = True
+        user.save(update_fields=['is_superuser', 'is_staff'])
+        return [g.name for g in assigned_groups]
+
+    @classmethod
     def assign_mission_role(cls, user, mission_role):
         """Assigns the corresponding institutional Group to the user based on their mission role."""
-        cls.provision_institutional_roles()
-        group_name = cls.ROLE_MAPPING.get(mission_role, 'Compliance & Financial Auditor')
-        group = Group.objects.filter(name=group_name).first()
-        if group:
-            user.groups.clear()
-            user.groups.add(group)
-            if mission_role == 'ALL_FAMILIES':
-                user.is_superuser = True
-            else:
-                user.is_superuser = False
-            user.save(update_fields=['is_superuser'])
-            return group_name
-        return None
+        groups = cls.assign_multiple_mission_roles(user, [mission_role])
+        return groups[0] if groups else None
     @classmethod
     def provision_institutional_roles(cls):
         """
