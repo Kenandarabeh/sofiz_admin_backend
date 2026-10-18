@@ -18,11 +18,11 @@ INSTITUTIONAL_ROLES = {
         'models': '__all__'
     },
     'Game Family Operator': {
-        'description': 'Authorized for Gaming and wholesale top-ups management: Free Fire, PUBG, G2Bulk balance monitoring, game profit tracking, Salah Gaming Account working capital surveillance, and wholesale replenishment.',
+        'description': 'Authorized for Gaming orders, purchasing USDT via Binance P2P using Salah BaridiMob funds, and filling/depositing wholesale inventory into G2Bulk supplier account.',
         'color': '#7c3aed',
         'is_super': False,
         'app_labels': ['monitoring'],
-        'models': ['gamingfinancialstatus', 'supplieraccount', 'gamingcapitalentry', 'gameprofitrecord', 'accountworkingcapital', 'baridimobaccount', 'gamingbaridimobaccount', 'withdrawalrecord'],
+        'models': ['gamingfinancialstatus', 'supplieraccount', 'gamingcapitalentry', 'gameprofitrecord', 'accountworkingcapital', 'baridimobaccount', 'gamingbaridimobaccount', 'withdrawalrecord', 'binanceaccount'],
         'actions': ['add', 'change', 'view']
     },
     'Facture Family Operator': {
@@ -50,11 +50,11 @@ INSTITUTIONAL_ROLES = {
         'actions': ['add', 'change', 'view']
     },
     'Withdrawal Operations Officer': {
-        'description': 'Authorized for managing fund outflows, processing BaridiMob receipts, executing withdrawal liquidity deductions, and managing supplier funding disbursements.',
+        'description': 'Authorized strictly for transferring accumulated collection funds from Collection accounts/wallets into Salah BaridiMob account. Does NOT handle Binance USDT purchases or G2Bulk supplier funding.',
         'color': '#ea580c',
         'is_super': False,
         'app_labels': ['monitoring'],
-        'models': ['withdrawalrecord', 'baridimobfundingreceipt', 'baridimobaccount', 'gamingbaridimobaccount', 'stellarwallet', 'walletsweeplog', 'expenserecord', 'binancep2poperation', 'supplieraccount'],
+        'models': ['withdrawalrecord', 'baridimobfundingreceipt', 'baridimobaccount', 'gamingbaridimobaccount', 'stellarwallet', 'walletsweeplog', 'expenserecord'],
         'actions': ['add', 'change', 'view']
     },
     'Compliance & Financial Auditor': {

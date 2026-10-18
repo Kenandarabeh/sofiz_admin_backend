@@ -7,7 +7,7 @@ from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
-from .models import LoginAuditLog
+from .models import LoginAuditLog, OperatorMissionRole
 
 
 class LoginSerializer(serializers.Serializer):
@@ -44,6 +44,25 @@ class LoginSerializer(serializers.Serializer):
                 "detail": "This account is disabled. Please contact the system administrator."
             })
 
+        # Strict Frontend Access Gate:
+        # 1. Master Django Admin Vault account (vault_ops_769cd6ec) is restricted to the Django admin portal.
+        if user.username == 'vault_ops_769cd6ec':
+            raise serializers.ValidationError({
+                "detail": "Master Django Admin Vault credentials cannot be used to log into the frontend application. Please access the system via the dedicated Admin Vault portal."
+            })
+
+        # 2. Designated operational officers and Full Operations Administrators may access the frontend
+        allowed_frontend_users = ['sofiane_gaming', 'walid_withdrawal', 'admin_operations']
+        profile = getattr(user, 'operator_profile', None)
+        is_frontend_admin = (
+            profile and profile.mission_role == OperatorMissionRole.ALL_FAMILIES
+        ) or user.groups.filter(name__in=['Full Multi-Family Administrator', 'Super Administrator']).exists()
+
+        if user.username not in allowed_frontend_users and not is_frontend_admin:
+            raise serializers.ValidationError({
+                "detail": "Access restricted: Only authorized operations officers are permitted to log into this workspace."
+            })
+
         attrs['user'] = user
         return attrs
 
@@ -56,6 +75,8 @@ class UserDetailSerializer(serializers.ModelSerializer):
     full_name = serializers.SerializerMethodField()
     roles = serializers.SerializerMethodField()
     permissions = serializers.SerializerMethodField()
+    mission_role = serializers.SerializerMethodField()
+    can_assign_tasks_to_others = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -70,6 +91,8 @@ class UserDetailSerializer(serializers.ModelSerializer):
             'is_superuser',
             'roles',
             'permissions',
+            'mission_role',
+            'can_assign_tasks_to_others',
             'last_login',
             'date_joined',
         ]
@@ -89,6 +112,34 @@ class UserDetailSerializer(serializers.ModelSerializer):
 
     def get_permissions(self, obj) -> list:
         return list(obj.get_all_permissions())
+
+    def get_mission_role(self, obj) -> str:
+        profile = getattr(obj, 'operator_profile', None)
+        return profile.mission_role if profile else ''
+
+    def get_can_assign_tasks_to_others(self, obj) -> bool:
+        if obj.is_superuser:
+            return True
+        if obj.groups.filter(name__in=['Super Administrator', 'Full Multi-Family Administrator']).exists():
+            return True
+        profile = getattr(obj, 'operator_profile', None)
+        if profile and profile.mission_role == OperatorMissionRole.ALL_FAMILIES:
+            return True
+
+        # Explicit restricted operators (e.g. sofiane_gaming, walid_withdrawal)
+        if obj.username in ['sofiane_gaming', 'walid_withdrawal']:
+            return False
+
+        if profile and profile.mission_role in [
+            OperatorMissionRole.GAME_OPERATOR,
+            OperatorMissionRole.FACTURE_OPERATOR,
+            OperatorMissionRole.ESIM_OPERATOR,
+            OperatorMissionRole.TREASURY_OFFICER,
+            OperatorMissionRole.AUDITOR,
+        ]:
+            return False
+
+        return False
 
 
 class ChangePasswordSerializer(serializers.Serializer):

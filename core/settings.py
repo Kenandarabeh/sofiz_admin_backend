@@ -105,6 +105,22 @@ MEDIA_ROOT = BASE_DIR / 'media'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_CREDENTIALS = True
+
+CSRF_TRUSTED_ORIGINS = [
+    'http://localhost:5172',
+    'http://127.0.0.1:5172',
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    'http://localhost:5174',
+    'http://127.0.0.1:5174',
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    'http://localhost:8000',
+    'http://127.0.0.1:8000',
+]
+
+FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5172')
 
 # Email Configuration (Matching Epay standard)
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
@@ -124,7 +140,6 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'monitoring.authentication.CombinedAPIKeyOrJWTAuthentication',
         'rest_framework_simplejwt.authentication.JWTAuthentication',
-        'rest_framework.authentication.SessionAuthentication',
     ),
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
@@ -160,3 +175,11 @@ SIMPLE_JWT = {
 OPENWA_BASE_URL = os.getenv('OPENWA_BASE_URL', 'https://whats.sofizpay.com')
 OPENWA_API_KEY = os.getenv('OPENWA_API_KEY', 'owa_k1_b76726a2ba218f3af77e6a84f82eb4c00fc7e1290ad714bd9d0739b10d7961cc')
 OPENWA_SESSION_ID = os.getenv('OPENWA_SESSION_ID', '5169c587-641a-46c3-a6a2-4bd4329439ae')
+
+# Obfuscated / Secret Django Admin Portal URL Path
+# Prevents bot scans, brute force, and discovery of the administrative console
+ADMIN_URL_PATH = os.getenv('DJANGO_ADMIN_URL', '8f2a9c37/').strip('/') + '/'
+LOGIN_URL = '/' + ADMIN_URL_PATH + 'login/'
+LOGIN_REDIRECT_URL = '/' + ADMIN_URL_PATH
+
+

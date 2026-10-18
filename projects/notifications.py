@@ -249,18 +249,37 @@ def _get_base_template(headline, preheader, task_key, task_title, project_name, 
 </html>'''
 
 
+def _resolve_user_email(user):
+    if not user:
+        return None
+    email = getattr(user, 'email', None)
+    if email and str(email).strip():
+        return str(email).strip()
+    profile = getattr(user, 'operator_profile', None)
+    if profile and getattr(profile, 'email', None) and str(profile.email).strip():
+        return str(profile.email).strip()
+    return None
+
+
 def notify_task_assigned_async(task, assigned_by=None):
-    if not task.assignee or not task.assignee.email:
+    if not task.assignee:
         return
 
-    recipient_email = task.assignee.email.strip()
+    # Skip email if the assigner is the assignee themselves
+    if assigned_by and getattr(assigned_by, 'id', None) == task.assignee.id:
+        return
+
+    recipient_email = _resolve_user_email(task.assignee)
+    if not recipient_email:
+        return
+
     assignee_name = task.assignee.get_full_name() or task.assignee.username
     assigned_by_name = (assigned_by.get_full_name() or assigned_by.username) if assigned_by else "System Administrator"
     project_name = task.project.name if task.project else "General"
     due_date_str = task.due_date.strftime('%Y-%m-%d') if task.due_date else "Not set"
 
-    frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:5173')
-    cta_url = f"{frontend_url.rstrip('/')}/projects"
+    frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:5172')
+    cta_url = f"{frontend_url.rstrip('/')}/tasks"
 
     subject = f"[Sofiz / Workflow] New task assigned: {task.task_key} - {task.title}"
 
@@ -420,4 +439,128 @@ def notify_task_comment_added_async(task, comment, author=None):
     )
 
     _dispatch_async_email(list(recipients), subject, text_content, html_content)
+
+
+def notify_task_tampered_async(task, target_user, modified_by=None, changes=None):
+    """
+    Sends an alert email to the task owner/assignee when their task is modified,
+    reassigned, or tampered with by another user or administrator.
+    """
+    if not target_user:
+        return
+    # Do not alert if the modifier is the target user themselves
+    if modified_by and getattr(modified_by, 'id', None) == target_user.id:
+        return
+
+    recipient_email = _resolve_user_email(target_user)
+    if not recipient_email:
+        return
+
+    modified_by_name = (modified_by.get_full_name() or modified_by.username) if modified_by else "Another Team Member"
+    assignee_name = target_user.get_full_name() or target_user.username
+    project_name = task.project.name if task.project else "General"
+    due_date_str = task.due_date.strftime('%Y-%m-%d') if task.due_date else "Not set"
+
+    frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:5172')
+    cta_url = f"{frontend_url.rstrip('/')}/tasks"
+
+    subject = f"[Sofiz Task Alert] Task {task.task_key} was modified by {modified_by_name}"
+
+    changes_list = changes or ["Task details were updated."]
+    changes_html_items = "".join([f"<li style='margin-bottom: 6px;'>{c}</li>" for c in changes_list])
+    changes_text = "\n".join([f"• {c}" for c in changes_list])
+
+    alert_box_html = f'''
+    <div style="background: #fff1f2; border: 1px solid #fecdd3; border-left: 4px solid #e11d48; padding: 16px; border-radius: 8px; margin: 16px 0;">
+      <strong style="color: #9f1239; font-size: 14px; display: block; margin-bottom: 8px;">
+        ⚠️ Task Modification Activity Alert
+      </strong>
+      <p style="color: #475569; font-size: 13px; margin: 0 0 10px 0;">
+        Hello <strong>{assignee_name}</strong>, your assigned task has been modified by <strong>{modified_by_name}</strong>.
+      </p>
+      <div style="font-size: 12px; color: #0f172a; font-weight: 600; margin-bottom: 4px;">Changes Applied:</div>
+      <ul style="margin: 0; padding-left: 18px; font-size: 13px; color: #334155;">
+        {changes_html_items}
+      </ul>
+    </div>
+    '''
+
+    text_content = (
+        f"Hello {assignee_name},\n\n"
+        f"ALERT: Your assigned task [{task.task_key}] '{task.title}' was modified by {modified_by_name}.\n\n"
+        f"Changes Applied:\n{changes_text}\n\n"
+        f"Project: {project_name}\n"
+        f"Current Status: {STATUS_LABELS.get(task.status, task.status)}\n"
+        f"Current Priority: {PRIORITY_LABELS.get(task.priority, task.priority)}\n\n"
+        f"Direct Link:\n{cta_url}\n"
+    )
+
+    html_content = _get_base_template(
+        headline="⚠️ Task Modification Alert",
+        preheader=f"Modified by: {modified_by_name}",
+        task_key=task.task_key,
+        task_title=task.title,
+        project_name=project_name,
+        status=task.status,
+        priority=task.priority,
+        due_date_str=due_date_str,
+        extra_body_html=alert_box_html,
+        cta_url=cta_url
+    )
+
+    _dispatch_async_email([recipient_email], subject, text_content, html_content)
+
+
+def notify_task_deleted_async(task_key, task_title, target_user, deleted_by=None):
+    """
+    Sends an alert email when an assigned task is deleted by another user.
+    """
+    if not target_user:
+        return
+    if deleted_by and getattr(deleted_by, 'id', None) == target_user.id:
+        return
+
+    recipient_email = _resolve_user_email(target_user)
+    if not recipient_email:
+        return
+
+    deleted_by_name = (deleted_by.get_full_name() or deleted_by.username) if deleted_by else "Another Team Member"
+    assignee_name = target_user.get_full_name() or target_user.username
+
+    frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:5172')
+    cta_url = f"{frontend_url.rstrip('/')}/tasks"
+
+    subject = f"[Sofiz Task Alert] Task {task_key} was deleted by {deleted_by_name}"
+
+    alert_box_html = f'''
+    <div style="background: #fff1f2; border: 1px solid #fecdd3; border-left: 4px solid #e11d48; padding: 16px; border-radius: 8px; margin: 16px 0;">
+      <strong style="color: #9f1239; font-size: 14px; display: block; margin-bottom: 8px;">
+        🗑️ Task Deletion Notification
+      </strong>
+      <p style="color: #475569; font-size: 13px; margin: 0;">
+        Hello <strong>{assignee_name}</strong>, your assigned task <strong>[{task_key}] {task_title}</strong> was deleted from the workspace by <strong>{deleted_by_name}</strong>.
+      </p>
+    </div>
+    '''
+
+    text_content = (
+        f"Hello {assignee_name},\n\n"
+        f"ALERT: Your assigned task [{task_key}] '{task_title}' was deleted from the workspace by {deleted_by_name}.\n\n"
+        f"Direct Link:\n{cta_url}\n"
+    )
+
+    html_content = _get_base_template(
+        headline="🗑️ Task Deletion Alert",
+        preheader=f"Deleted by: {deleted_by_name}",
+        task_key=task_key,
+        task_title=task_title,
+        project_name="Deleted Task",
+        status="DONE",
+        priority="HIGH",
+        due_date_str="N/A",
+        extra_body_html=alert_box_html,
+        cta_url=cta_url
+    )
+
+    _dispatch_async_email([recipient_email], subject, text_content, html_content)
 

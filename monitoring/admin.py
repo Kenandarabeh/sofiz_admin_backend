@@ -21,6 +21,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.contrib.auth.models import Group
 from django.core.exceptions import ValidationError
+from django.conf import settings
 from django.utils import timezone
 from django.utils.html import format_html
 
@@ -65,6 +66,10 @@ from .models import (
     OperatorMissionRole,
     OperatorStatus,
     OperatorActionLog,
+    G2BulkReplenishmentWindow,
+    ReplenishmentWindowStatus,
+    BybitAccount,
+    AiraloAccount,
 )
 from .services.audit_service import AuditService
 from .services.balance_engine import BalanceEngine
@@ -101,10 +106,12 @@ def custom_get_app_list(self, request, app_label=None):
     auth_app = None
     monitoring_models = {}
 
+    monitoring_app_url = '/admin/monitoring/'
     for app in app_list:
         if app['app_label'] == 'auth':
             auth_app = app
         elif app['app_label'] == 'monitoring':
+            monitoring_app_url = app.get('app_url', monitoring_app_url)
             for model in app['models']:
                 object_name = model['object_name'].lower()
                 monitoring_models[object_name] = model
@@ -119,7 +126,7 @@ def custom_get_app_list(self, request, app_label=None):
     api_app = {
         'name': '🔑 API KEYS & CREDENTIALS VAULT',
         'app_label': 'api_vault',
-        'app_url': '/admin/monitoring/',
+        'app_url': monitoring_app_url,
         'has_module_perms': True,
         'models': get_models(['monitoringglobalsettings']),
     }
@@ -128,7 +135,7 @@ def custom_get_app_list(self, request, app_label=None):
     wallets_app = {
         'name': '🔐 STELLAR WALLETS & SECRET KEYS (SK)',
         'app_label': 'stellar_wallets',
-        'app_url': '/admin/monitoring/',
+        'app_url': monitoring_app_url,
         'has_module_perms': True,
         'models': get_models(['stellarwallet']),
     }
@@ -137,7 +144,7 @@ def custom_get_app_list(self, request, app_label=None):
     capitals_app = {
         'name': '💰 ACCOUNT WORKING CAPITALS (BY FAMILY)',
         'app_label': 'account_capitals',
-        'app_url': '/admin/monitoring/',
+        'app_url': monitoring_app_url,
         'has_module_perms': True,
         'models': get_models(['accountworkingcapital']),
     }
@@ -146,7 +153,7 @@ def custom_get_app_list(self, request, app_label=None):
     game_app = {
         'name': '🎮 GAME OPERATIONS & MONITORING (Free Fire, PUBG, G2Bulk)',
         'app_label': 'game_operations',
-        'app_url': '/admin/monitoring/',
+        'app_url': monitoring_app_url,
         'has_module_perms': True,
         'models': get_models([
             'gamingfinancialstatus',
@@ -162,7 +169,7 @@ def custom_get_app_list(self, request, app_label=None):
     facture_app = {
         'name': '📄 FACTURE OPERATIONS & SETTLEMENT (Sonelgaz, ADE, AT, Sihaam 31)',
         'app_label': 'facture_operations',
-        'app_url': '/admin/monitoring/',
+        'app_url': monitoring_app_url,
         'has_module_perms': True,
         'models': get_models([
             'utilityfinancialstatus',
@@ -178,11 +185,13 @@ def custom_get_app_list(self, request, app_label=None):
     esim_app = {
         'name': '📶 ESIM OPERATIONS & MONITORING (Telecom & Data)',
         'app_label': 'esim_operations',
-        'app_url': '/admin/monitoring/',
+        'app_url': monitoring_app_url,
         'has_module_perms': True,
         'models': get_models([
             'esimfinancialstatus',
             'esimbaridimobaccount',
+            'bybitaccount',
+            'airaloaccount',
             'esimwithdrawalrecord',
             'esimcapitalentry',
         ]),
@@ -192,7 +201,7 @@ def custom_get_app_list(self, request, app_label=None):
     treasury_app = {
         'name': '🏛️ CENTRAL TREASURY, BINANCE & SOLIDARITY AUDIT',
         'app_label': 'treasury_operations',
-        'app_url': '/admin/monitoring/',
+        'app_url': monitoring_app_url,
         'has_module_perms': True,
         'models': get_models([
             'balanceauditlog',
@@ -210,7 +219,7 @@ def custom_get_app_list(self, request, app_label=None):
     staff_app = {
         'name': '👥 EMPLOYEES & OPERATORS (BY ROLE & PERMISSION)',
         'app_label': 'staff_management',
-        'app_url': '/admin/monitoring/',
+        'app_url': monitoring_app_url,
         'has_module_perms': True,
         'models': get_models(['staffoperator', 'operatoractionlog']),
     }
@@ -218,10 +227,11 @@ def custom_get_app_list(self, request, app_label=None):
     # 9. 🛡️ Access Control & Audit Logs
     auth_models = auth_app['models'] if auth_app else []
     security_models = get_models(['loginauditlog', 'operatoractionlog'])
+    auth_app_url = auth_app.get('app_url', monitoring_app_url) if auth_app else monitoring_app_url
     rbac_app = {
         'name': '🛡️ ACCESS CONTROL & AUDIT LOGS',
         'app_label': 'rbac_access',
-        'app_url': '/admin/auth/',
+        'app_url': auth_app_url,
         'has_module_perms': True,
         'models': auth_models + security_models,
     }
@@ -278,6 +288,26 @@ class InstitutionalAuditAdminMixin:
 #  🔑 1. API KEYS & CREDENTIALS VAULT (ZERO HTML)
 # ==============================================================================
 class MonitoringGlobalSettingsForm(forms.ModelForm):
+    bybit_api_key = forms.CharField(
+        widget=forms.PasswordInput(render_value=True, attrs={'style': 'font-family: monospace; width: 450px;', 'placeholder': 'Bybit V5 API Key'}),
+        required=False,
+        label="Bybit API Key"
+    )
+    bybit_api_secret = forms.CharField(
+        widget=forms.PasswordInput(render_value=True, attrs={'style': 'font-family: monospace; width: 450px;', 'placeholder': 'Bybit V5 API Secret'}),
+        required=False,
+        label="Bybit API Secret"
+    )
+    airalo_client_id = forms.CharField(
+        widget=forms.TextInput(attrs={'style': 'font-family: monospace; width: 450px;', 'placeholder': 'Airalo Client ID'}),
+        required=False,
+        label="Airalo Client ID"
+    )
+    airalo_client_secret = forms.CharField(
+        widget=forms.PasswordInput(render_value=True, attrs={'style': 'font-family: monospace; width: 450px;', 'placeholder': 'Airalo Client Secret'}),
+        required=False,
+        label="Airalo Client Secret"
+    )
     epay_api_key = forms.CharField(
         widget=forms.PasswordInput(render_value=True, attrs={'style': 'font-family: monospace; width: 450px;'}),
         required=False,
@@ -319,13 +349,26 @@ class MonitoringGlobalSettingsAdmin(admin.ModelAdmin):
     form = MonitoringGlobalSettingsForm
     list_display = (
         '__str__',
+        'mode_badge',
         'epay_exchange_rate_display',
         'total_live_profits_dzd',
         'is_auto_sync_enabled',
         'last_global_sync',
     )
-    readonly_fields = ('last_global_sync',)
+    readonly_fields = ('last_global_sync', 'mode_quick_toggle_panel')
     fieldsets = (
+        ('🚨 Master Operational Mode: REAL vs MOCK', {
+            'fields': ('data_source_mode', 'mode_quick_toggle_panel'),
+            'description': 'ONE-CLICK SWITCH BETWEEN MOCK SIMULATION AND REAL LIVE PRODUCTION DATA. When set to REAL, all services strictly fetch live balances & data from real APIs and real DB records without simulated overrides.'
+        }),
+        ('Bybit V5 API & eSIM Visa Card Gateway', {
+            'fields': ('bybit_api_key', 'bybit_api_secret', 'bybit_user_id'),
+            'description': 'Institutional credentials for Bybit V5 API live USDT funding balances, trading accounts, and corporate Visa card funding.'
+        }),
+        ('Airalo Wholesale eSIM Telecom API', {
+            'fields': ('airalo_base_url', 'airalo_client_id', 'airalo_client_secret', 'airalo_min_threshold_usd'),
+            'description': 'Official Airalo partner credentials for live eSIM inventory balance monitoring and refill alerts.'
+        }),
         ('Epay Gateway API Credentials', {
             'fields': ('epay_api_url', 'epay_api_key')
         }),
@@ -342,20 +385,66 @@ class MonitoringGlobalSettingsAdmin(admin.ModelAdmin):
             'fields': ('gaming_baridimob_min_threshold_dzd', 'utility_baridimob_min_threshold_dzd'),
             'description': 'Configure the minimum DZD balance threshold below which an alert is triggered in the admin dashboard requiring working capital replenishment.'
         }),
-        ('Blockchain Node & Master Keys', {
+        ('Valuation, Automated Routing & Blockchain Keys', {
             'fields': (
+                'usd_to_dzd_exchange_rate',
                 'master_admin_api_key',
                 'stellar_horizon_url',
                 'dzt_asset_code',
                 'dzt_asset_issuer',
+                'games_collection_wallet',
+                'central_treasury_wallet',
                 'is_auto_sync_enabled',
                 'last_global_sync',
             )
         }),
     )
 
+    def get_urls(self):
+        from django.urls import path
+        urls = super().get_urls()
+        custom_urls = [
+            path('quick-toggle-mode/', self.admin_site.admin_view(self.quick_toggle_mode_view), name='monitoring_toggle_mode'),
+        ]
+        return custom_urls + urls
+
+    def quick_toggle_mode_view(self, request):
+        from django.shortcuts import redirect
+        from django.contrib import messages
+        sync_report = MonitoringGlobalSettings.apply_data_mode(mode=MonitoringGlobalSettings.DataSourceMode.REAL)
+        messages.success(request, "🟢 Successfully synchronized REAL LIVE PRODUCTION DATA! All accounts and services queried live endpoints.")
+        return redirect(request.META.get('HTTP_REFERER') or '../1/change/')
+
+    @admin.display(description="Mode & Global Sync")
+    def mode_quick_toggle_panel(self, obj):
+        if not obj or not obj.id:
+            return "-"
+        real_btn_style = (
+            "background:#059669; color:#fff; font-weight:bold; padding:8px 16px; border-radius:6px; text-decoration:none; display:inline-block; box-shadow:0 2px 4px rgba(0,0,0,0.2);"
+        )
+        status_text = '<strong style="color:#059669; font-size:14px;">🟢 CURRENTLY ACTIVE: REAL LIVE PRODUCTION DATA</strong>'
+        return format_html(
+            '<div style="padding:14px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; margin-top:4px;">'
+            '<div style="margin-bottom:12px;">{}</div>'
+            '<div>'
+            '<a href="../quick-toggle-mode/?mode=REAL" style="{}">🔄 Force Live Synchronize All Services (Direct APIs)</a>'
+            '</div>'
+            '<p style="margin-top:10px; margin-bottom:0; font-size:12px; color:#64748b;">'
+            'Queries live Bybit, Airalo, Binance, G2Bulk, Epay, BaridiMob, ECCP, and Stellar Horizon.'
+            '</p>'
+            '</div>',
+            format_html(status_text),
+            real_btn_style
+        )
+
+    @admin.display(description="Operational Mode")
+    def mode_badge(self, obj):
+        return format_html('<span style="background-color: #059669; color: white; padding: 4px 10px; border-radius: 6px; font-weight: bold; font-size: 11px;">🟢 REAL LIVE DATA</span>')
+
     def save_model(self, request, obj, form, change):
         super().save_model(request, obj, form, change)
+        if change and 'data_source_mode' in form.changed_data:
+            MonitoringGlobalSettings.apply_data_mode(mode=obj.data_source_mode)
         if obj.g2bulk_min_threshold_usd:
             SupplierAccount.objects.filter(provider=SupplierProvider.G2BULK).update(
                 min_balance_threshold_usd=obj.g2bulk_min_threshold_usd
@@ -699,6 +788,93 @@ class SupplierAccountAdmin(InstitutionalAuditAdminMixin, admin.ModelAdmin):
             self.message_user(request, f"G2Bulk Sync Error: {res.get('error')}", level='ERROR')
 
 
+@admin.register(G2BulkReplenishmentWindow)
+class G2BulkReplenishmentWindowAdmin(InstitutionalAuditAdminMixin, admin.ModelAdmin):
+    list_display = (
+        'id',
+        'supplier',
+        'status_badge',
+        'started_at',
+        'duration_display',
+        'expires_at',
+        'countdown_badge',
+        'initial_balance_usd',
+        'target_replenish_amount_usd',
+        'final_balance_usd',
+        'suppressed_alerts_count',
+        'alert_dispatched_badge',
+    )
+    list_filter = ('status', 'alert_dispatched', 'started_at')
+    search_fields = ('initiated_by', 'notes', 'supplier__name')
+    readonly_fields = ('started_at', 'expires_at', 'completed_at', 'created_at', 'updated_at', 'suppressed_alerts_count')
+    actions = ['complete_window_action', 'cancel_window_action', 'evaluate_windows_action']
+
+    def status_badge(self, obj):
+        if obj.status == ReplenishmentWindowStatus.ACTIVE:
+            return format_html(
+                '<span style="background: #1e3a8a; color: #93c5fd; font-weight: bold; padding: 3px 8px; border-radius: 6px; font-size: 11px;">🛡️ Active (Notifications Blocked)</span>'
+            )
+        elif obj.status == ReplenishmentWindowStatus.COMPLETED:
+            return format_html(
+                '<span style="background: #166534; color: #86efac; font-weight: bold; padding: 3px 8px; border-radius: 6px; font-size: 11px;">✅ Completed (Recharge Confirmed)</span>'
+            )
+        elif obj.status == ReplenishmentWindowStatus.EXPIRED_BALANCED:
+            return format_html(
+                '<span style="background: #065f46; color: #a7f3d0; font-weight: bold; padding: 3px 8px; border-radius: 6px; font-size: 11px;">Expired (100% Balanced)</span>'
+            )
+        elif obj.status == ReplenishmentWindowStatus.EXPIRED_DISCREPANCY:
+            return format_html(
+                '<span style="background: #991b1b; color: #fca5a5; font-weight: bold; padding: 3px 8px; border-radius: 6px; font-size: 11px;">🚨 Expired (Discrepancy Alerted)</span>'
+            )
+        return format_html(
+            '<span style="background: #475569; color: #cbd5e1; font-weight: bold; padding: 3px 8px; border-radius: 6px; font-size: 11px;">Cancelled</span>'
+        )
+    status_badge.short_description = "Window Status"
+
+    def duration_display(self, obj):
+        return f"{obj.duration_hours} Hours"
+    duration_display.short_description = "Max Duration"
+
+    def countdown_badge(self, obj):
+        if obj.status != ReplenishmentWindowStatus.ACTIVE:
+            return format_html('<span style="color: #64748b; font-size: 11px;">Closed</span>')
+        sec = obj.remaining_seconds
+        if sec <= 0:
+            return format_html('<span style="color: #f59e0b; font-weight: bold; font-size: 11px;">Expired (Evaluating...)</span>')
+        hrs = sec // 3600
+        mins = (sec % 3600) // 60
+        return format_html(
+            '<span style="font-family: monospace; font-weight: bold; color: #3b82f6;">{}h {}m remaining</span>',
+            hrs, mins
+        )
+    countdown_badge.short_description = "Grace Countdown"
+
+    def alert_dispatched_badge(self, obj):
+        if obj.alert_dispatched:
+            return format_html('<span style="color: #ef4444; font-weight: bold;">🚨 Dispatched</span>')
+        return format_html('<span style="color: #10b981;">No Discrepancy</span>')
+    alert_dispatched_badge.short_description = "Delayed Alert"
+
+    @admin.action(description="Complete Selected Windows (Recharge Confirmed)")
+    def complete_window_action(self, request, queryset):
+        for win in queryset.filter(status=ReplenishmentWindowStatus.ACTIVE):
+            G2BulkReplenishmentWindow.complete_window(win.id, notes="Manually completed from Django Admin.")
+        self.message_user(request, "Selected replenishment windows completed successfully.")
+
+    @admin.action(description="Cancel Selected Windows (Restore Instant Alerting)")
+    def cancel_window_action(self, request, queryset):
+        queryset.filter(status=ReplenishmentWindowStatus.ACTIVE).update(
+            status=ReplenishmentWindowStatus.CANCELLED,
+            completed_at=timezone.now()
+        )
+        self.message_user(request, "Selected replenishment windows cancelled.")
+
+    @admin.action(description="Evaluate Expired Windows & Check Discrepancies")
+    def evaluate_windows_action(self, request, queryset):
+        G2BulkReplenishmentWindow.evaluate_and_expire_windows()
+        self.message_user(request, "Replenishment windows evaluated against live audit engine.")
+
+
 @admin.register(GamingWithdrawalRecord)
 class GamingWithdrawalRecordAdmin(InstitutionalAuditAdminMixin, admin.ModelAdmin):
     list_display = (
@@ -975,12 +1151,11 @@ class BaridiMobFundingReceiptAdmin(InstitutionalAuditAdminMixin, admin.ModelAdmi
         'formatted_fee',
         'status_badge',
         'recipient_rip',
-        'sender_rip',
         'responsible_person',
         'receipt_date',
     )
     list_filter = ('status', 'receipt_date', 'created_at')
-    search_fields = ('reference', 'recipient_rip', 'sender_rip', 'responsible_person')
+    search_fields = ('reference', 'recipient_rip', 'responsible_person')
     readonly_fields = ('file_hash', 'raw_text', 'created_at')
     actions = ['reparse_receipt_action']
 
@@ -1143,6 +1318,39 @@ class eSIMCapitalEntryAdmin(InstitutionalAuditAdminMixin, admin.ModelAdmin):
         val = obj.amount_dzd or Decimal("0.00")
         return format_html('<span style="font-family: monospace; font-weight: bold; color: #16a34a;">+{} DZT</span>', f"{val:,.2f}")
     formatted_amount_dzd.short_description = "Amount (DZT)"
+
+
+@admin.register(BybitAccount)
+class BybitAccountAdmin(InstitutionalAuditAdminMixin, admin.ModelAdmin):
+    list_display = ('account_name', 'user_id', 'formatted_funding_usdt', 'formatted_unified_usdt', 'formatted_dzd', 'is_active', 'last_synced_at')
+    list_filter = ('is_active', 'last_synced_at')
+    search_fields = ('account_name', 'user_id')
+    readonly_fields = ('balance_dzd_equivalent', 'last_synced_at', 'last_error', 'created_at', 'updated_at')
+
+    def formatted_funding_usdt(self, obj):
+        return format_html('<span style="font-family: monospace; font-weight: bold; color: #0284c7;">{} USDT</span>', f"{obj.funding_balance_usdt:,.2f}")
+    formatted_funding_usdt.short_description = "Funding Wallet"
+
+    def formatted_unified_usdt(self, obj):
+        return format_html('<span style="font-family: monospace; font-weight: bold; color: #475569;">{} USDT</span>', f"{obj.unified_balance_usdt:,.2f}")
+    formatted_unified_usdt.short_description = "Unified Wallet"
+
+    def formatted_dzd(self, obj):
+        return format_html('<span style="font-family: monospace; font-weight: bold; color: #16a34a;">{} DZT</span>', f"{obj.balance_dzd_equivalent:,.2f}")
+    formatted_dzd.short_description = "DZD Equivalent"
+
+
+@admin.register(AiraloAccount)
+class AiraloAccountAdmin(InstitutionalAuditAdminMixin, admin.ModelAdmin):
+    list_display = ('account_name', 'formatted_balance_usd', 'is_active', 'last_synced_at')
+    list_filter = ('is_active', 'last_synced_at')
+    search_fields = ('account_name',)
+    readonly_fields = ('last_synced_at', 'last_error', 'created_at', 'updated_at')
+
+    def formatted_balance_usd(self, obj):
+        return format_html('<span style="font-family: monospace; font-weight: bold; color: #0284c7;">${} USD</span>', f"{obj.available_balance_usd:,.2f}")
+    formatted_balance_usd.short_description = "Available Balance"
+
 
 
 # ==============================================================================
@@ -1515,9 +1723,14 @@ class StaffOperatorAdmin(InstitutionalAuditAdminMixin, admin.ModelAdmin):
     login_account_status.short_description = "Auth Account"
 
     def view_audit_trail_link(self, obj):
+        try:
+            from django.urls import reverse
+            url = reverse('admin:monitoring_operatoractionlog_changelist') + f'?q={obj.username}'
+        except Exception:
+            url = f'/{getattr(settings, "ADMIN_URL_PATH", "portal-vault-8f2a9c37/")}monitoring/operatoractionlog/?q={obj.username}'
         return format_html(
-            '<a href="/admin/monitoring/operatoractionlog/?q={}" style="background: #0284c7; color: white; padding: 3px 7px; border-radius: 4px; text-decoration: none; font-size: 11px; font-weight: bold;">🔍 View Changes</a>',
-            obj.username
+            '<a href="{}" style="background: #0284c7; color: white; padding: 3px 7px; border-radius: 4px; text-decoration: none; font-size: 11px; font-weight: bold;">🔍 View Changes</a>',
+            url
         )
     view_audit_trail_link.short_description = "Audit Trail"
 

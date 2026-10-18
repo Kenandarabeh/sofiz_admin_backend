@@ -33,6 +33,8 @@ from .notifications import (
     notify_task_assigned_async,
     notify_task_status_changed_async,
     notify_task_comment_added_async,
+    notify_task_tampered_async,
+    notify_task_deleted_async,
 )
 
 
@@ -156,10 +158,15 @@ class TaskViewSet(viewsets.ModelViewSet):
         old_task = self.get_object()
         old_assignee = old_task.assignee
         old_status = old_task.status
+        old_title = old_task.title
+        old_priority = old_task.priority
+        old_due_date = old_task.due_date
+        old_description = old_task.description
 
         task = serializer.save()
         user = self.request.user if (self.request.user and self.request.user.is_authenticated) else None
 
+        # 1. Assignee Change
         if task.assignee and (not old_assignee or old_assignee.id != task.assignee.id):
             TaskActivityLog.objects.create(
                 task=task,
@@ -172,6 +179,7 @@ class TaskViewSet(viewsets.ModelViewSet):
             )
             notify_task_assigned_async(task, assigned_by=user)
 
+        # 2. Status Change
         if task.status != old_status:
             TaskActivityLog.objects.create(
                 task=task,
@@ -181,6 +189,44 @@ class TaskViewSet(viewsets.ModelViewSet):
             )
             notify_task_status_changed_async(task, old_status=old_status, new_status=task.status, changed_by=user)
 
+        # 3. Modification / Tampering Alert (When someone edits another operator's task)
+        if user and old_assignee and user.id != old_assignee.id:
+            changes = []
+            if task.title != old_title:
+                changes.append(f"Title changed from '{old_title}' to '{task.title}'")
+            if task.status != old_status:
+                changes.append(f"Status changed from '{old_status}' to '{task.status}'")
+            if task.priority != old_priority:
+                changes.append(f"Priority changed from '{old_priority}' to '{task.priority}'")
+            if task.due_date != old_due_date:
+                old_d = old_due_date.strftime('%Y-%m-%d') if old_due_date else 'None'
+                new_d = task.due_date.strftime('%Y-%m-%d') if task.due_date else 'None'
+                changes.append(f"Due date changed from {old_d} to {new_d}")
+            if task.description != old_description:
+                changes.append("Task description / instructions were modified")
+            if task.assignee != old_assignee:
+                new_assignee_name = task.assignee.get_full_name() or task.assignee.username if task.assignee else "Unassigned"
+                changes.append(f"Task reassigned away from you to '{new_assignee_name}'")
+
+            if changes:
+                notify_task_tampered_async(
+                    task=task,
+                    target_user=old_assignee,
+                    modified_by=user,
+                    changes=changes
+                )
+
+    def perform_destroy(self, instance):
+        user = self.request.user if (self.request.user and self.request.user.is_authenticated) else None
+        if instance.assignee and user and user.id != instance.assignee.id:
+            notify_task_deleted_async(
+                task_key=instance.task_key,
+                task_title=instance.title,
+                target_user=instance.assignee,
+                deleted_by=user
+            )
+        instance.delete()
+
     def get_queryset(self):
         qs = super().get_queryset()
         user = self.request.user
@@ -188,7 +234,7 @@ class TaskViewSet(viewsets.ModelViewSet):
         # Normal users can only see tasks assigned to them or reported by them
         can_view_all = False
         if user and user.is_authenticated:
-            if user.is_superuser:
+            if user.is_superuser or user.is_staff:
                 can_view_all = True
             elif user.groups.filter(name__in=['Super Administrator', 'Full Multi-Family Administrator']).exists():
                 can_view_all = True
@@ -267,6 +313,13 @@ class TaskViewSet(viewsets.ModelViewSet):
 
         if old_status != new_status:
             notify_task_status_changed_async(task, old_status=old_status, new_status=new_status, changed_by=user)
+            if task.assignee and user and user.id != task.assignee.id:
+                notify_task_tampered_async(
+                    task=task,
+                    target_user=task.assignee,
+                    modified_by=user,
+                    changes=[f"Status changed from '{old_status}' to '{new_status}'"]
+                )
 
         serializer = self.get_serializer(task)
         return Response(serializer.data)
@@ -300,6 +353,15 @@ class TaskViewSet(viewsets.ModelViewSet):
 
         if task.assignee and (not old_assignee or old_assignee.id != task.assignee.id):
             notify_task_assigned_async(task, assigned_by=user)
+
+        if old_assignee and user and user.id != old_assignee.id and (not task.assignee or task.assignee.id != old_assignee.id):
+            new_assignee_name = task.assignee.get_full_name() or task.assignee.username if task.assignee else "Unassigned"
+            notify_task_tampered_async(
+                task=task,
+                target_user=old_assignee,
+                modified_by=user,
+                changes=[f"Task was reassigned away from you to '{new_assignee_name}'"]
+            )
 
         serializer = self.get_serializer(task)
         return Response(serializer.data)

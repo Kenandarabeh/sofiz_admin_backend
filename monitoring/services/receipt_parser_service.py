@@ -1,6 +1,6 @@
 """
 BaridiMob Receipt Parser & Data Extraction Service for SofizAdmin
-Extracts transaction reference, amount, sender/recipient RIPs, and fees from BaridiMob PDF receipts or images.
+Extracts transaction reference, amount, recipient RIP, and fees from BaridiMob PDF receipts or images.
 Implements SHA256 deduplication to prevent duplicate receipt submissions.
 """
 import re
@@ -187,7 +187,6 @@ class ReceiptParserService:
         - reference: N° de transaction / Référence
         - amount_dzd: Decimal
         - fee_dzd: Decimal (standard 50.00 DZD)
-        - sender_rip: str
         - recipient_rip: str
         - date_str: str
         - file_hash: str
@@ -211,31 +210,107 @@ class ReceiptParserService:
         extracted["raw_text"] = raw_text
         extracted["account_verification"] = cls.verify_recipient_account(
             recipient_rip=extracted.get("recipient_rip"),
-            sender_rip=extracted.get("sender_rip"),
             system_type=system_type
+        )
+        extracted["baridimob_statement_verification"] = cls.verify_against_baridimob_statement(
+            reference=extracted.get("reference"),
+            amount_dzd=extracted.get("amount_dzd"),
+            recipient_rip=extracted.get("recipient_rip")
         )
 
         return extracted
 
     @classmethod
-    def verify_recipient_account(cls, recipient_rip: str = None, sender_rip: str = None, system_type: str = None) -> dict:
+    def verify_against_baridimob_statement(cls, reference: str = None, amount_dzd: Decimal = None, recipient_rip: str = None) -> dict:
+        """
+        Cross-checks the extracted BaridiMob receipt transaction against the official BaridiMob statement
+        ledger (BaridiMobTransaction) recorded in the database.
+        
+        Returns:
+        - is_verified: bool
+        - status: "VERIFIED_ON_STATEMENT" | "AMOUNT_MISMATCH" | "NOT_FOUND_IN_STATEMENT"
+        - transaction_id: str
+        - amount_dzd: float
+        - account_name: str
+        - transaction_date: str
+        - message: str
+        """
+        from monitoring.models import BaridiMobTransaction
+        from django.db.models import Q
+
+        clean_ref = str(reference or '').strip()
+        if not clean_ref:
+            return {
+                'is_verified': False,
+                'status': 'NO_REFERENCE',
+                'message': 'No transaction reference available to verify against BaridiMob statement.'
+            }
+
+        # Query matching transactions by tid, ref_num, or substring in description
+        q = Q(tid__iexact=clean_ref) | Q(ref_num__iexact=clean_ref) | Q(description__icontains=clean_ref)
+        tx = BaridiMobTransaction.objects.filter(q).first()
+
+        if tx:
+            # Check amount match (within 0.50 DZD tolerance)
+            if amount_dzd is not None:
+                parsed_amt = Decimal(str(amount_dzd))
+                tx_amt = abs(Decimal(str(tx.amount)))
+                if abs(parsed_amt - tx_amt) > Decimal('0.50'):
+                    return {
+                        'is_verified': False,
+                        'status': 'AMOUNT_MISMATCH',
+                        'transaction_id': tx.tid,
+                        'statement_amount': float(tx_amt),
+                        'receipt_amount': float(parsed_amt),
+                        'account_name': tx.account.account_name,
+                        'account_rip': tx.account.rip_number,
+                        'transaction_date': str(tx.transaction_date),
+                        'message': f"Notice: Transaction #{tx.tid} found in statement, but statement amount ({float(tx_amt):,.2f} DZD) differs from receipt amount ({float(parsed_amt):,.2f} DZD)."
+                    }
+
+            return {
+                'is_verified': True,
+                'status': 'VERIFIED_ON_STATEMENT',
+                'transaction_id': tx.tid,
+                'reference_number': tx.ref_num,
+                'amount_dzd': float(abs(tx.amount)),
+                'account_name': tx.account.account_name,
+                'account_rip': tx.account.rip_number,
+                'transaction_date': str(tx.transaction_date),
+                'transaction_type': tx.transaction_type,
+                'message': f"Confirmed on Ledger: Transaction #{tx.tid} ({float(abs(tx.amount)):,.2f} DZD) verified in official statement for {tx.account.account_name}."
+            }
+
+        return {
+            'is_verified': False,
+            'status': 'NOT_FOUND_IN_STATEMENT',
+            'transaction_id': clean_ref,
+            'message': f"Unverified: Transaction reference #{clean_ref} was not found in the official BaridiMob account statement."
+        }
+
+    @classmethod
+    def verify_recipient_account(cls, recipient_rip: str = None, system_type: str = None, **kwargs) -> dict:
         """
         Validates that the recipient address/RIP extracted from the BaridiMob receipt
         is registered and stored in the system's authorized BaridiMobAccount ledger.
         Strict Security Policy: Reject sending funds to any external account not registered in the system.
+        Note: BaridiMob transfer receipts ONLY contain the recipient RIP. Sender RIP is never printed.
         """
         from monitoring.models import BaridiMobAccount, SubSystemType
         from django.db import models
 
         clean_recip = re.sub(r'\D', '', str(recipient_rip or '')).strip()
-        clean_sender = re.sub(r'\D', '', str(sender_rip or '')).strip()
 
         # Build query for active system accounts, optionally filtering by system_type if provided
         q_filter = models.Q(is_active=True)
         if system_type:
-            q_filter &= (models.Q(system_type=system_type) | models.Q(system_type=SubSystemType.ALL))
+            # Gaming and eSIM share operational BaridiMob postal channels (Salah account)
+            if system_type in [SubSystemType.ESIM, SubSystemType.GAMING]:
+                q_filter &= (models.Q(system_type=system_type) | models.Q(system_type=SubSystemType.ALL) | models.Q(system_type=SubSystemType.GAMING) | models.Q(system_type=SubSystemType.ESIM))
+            else:
+                q_filter &= (models.Q(system_type=system_type) | models.Q(system_type=SubSystemType.ALL))
 
-        # 1. Primary Check: Recipient RIP exists in active system accounts
+        # Check: Recipient RIP exists in active system accounts
         if clean_recip:
             acc = BaridiMobAccount.objects.filter(q_filter, rip_number=clean_recip).first()
             if not acc and not system_type:
@@ -251,30 +326,12 @@ class ReceiptParserService:
                     'message': f"Verified authorized system account for {acc.get_system_type_display()}: {acc.account_name} (RIP: {acc.rip_number})"
                 }
 
-        # 2. Secondary Check: Sender RIP exists in active system accounts
-        if clean_sender:
-            acc = BaridiMobAccount.objects.filter(q_filter, rip_number=clean_sender).first()
-            if not acc and not system_type:
-                acc = BaridiMobAccount.objects.filter(rip_number=clean_sender, is_active=True).first()
-            if acc:
-                return {
-                    'is_registered': True,
-                    'account_id': acc.id,
-                    'account_name': acc.account_name,
-                    'rip_number': acc.rip_number,
-                    'system_type': acc.system_type,
-                    'role': 'SENDER',
-                    'message': f"Verified authorized system account for {acc.get_system_type_display()}: {acc.account_name} (RIP: {acc.rip_number})"
-                }
-
-        # Fallback check: if the RIP is in system accounts under a different subsystem, give clear informative message
+        # Fallback check: if the RIP is in system accounts under a different subsystem
         existing_other = None
         if clean_recip:
             existing_other = BaridiMobAccount.objects.filter(rip_number=clean_recip, is_active=True).first()
-        elif clean_sender:
-            existing_other = BaridiMobAccount.objects.filter(rip_number=clean_sender, is_active=True).first()
 
-        target_rip = clean_recip or clean_sender or "N/A"
+        target_rip = clean_recip or "N/A"
         if existing_other:
             return {
                 'is_registered': True,
@@ -301,7 +358,6 @@ class ReceiptParserService:
             "reference": None,
             "amount_dzd": None,
             "fee_dzd": Decimal("50.00"),
-            "sender_rip": None,
             "recipient_rip": None,
             "date_str": None,
         }
@@ -311,7 +367,7 @@ class ReceiptParserService:
 
         # 1. Transaction Reference (External ID / Identifiant de transaction / N° de transaction / Référence / رقم المعاملة)
         ref_match = re.search(
-            r'(?:Identifiant\s*de\s*transa[c]?tion|N[°o]\s*(?:de\s*)?transa[c]?tion|External\s*id|External\s*ID|Transaction\s*ID|Operation\s*ID|R[ée]f[ée]rence|رقم\s*المعاملة|رقم\s*العملية|المرجع)\s*[:：\-]?\s*([A-Za-z0-9\-_]{6,30})',
+            r'(?:Identifiant\s*de\s*(?:transa[c]?tion|l[\'’]op[ée]ration)|N[°o]\s*(?:de\s*)?(?:transa[c]?tion|virement|l[\'’]op[ée]ration|recu)|External\s*id|External\s*ID|Transaction\s*ID|Operation\s*ID|R[ée]f[ée]rence|رقم\s*المعاملة|رقم\s*العملية|رقم\s*الحوالة|المرجع)\s*[:：\-]?\s*([A-Za-z0-9\-_]{5,35})',
             text,
             re.IGNORECASE
         )
@@ -325,8 +381,9 @@ class ReceiptParserService:
 
         # 2. Amount in DZD (Amount / Montant / DZD)
         amount_patterns = [
-            r'(?:Montant|Montant\s*du\s*virement|Amount|Transfer\s*Amount|Total\s*Amount|المبلغ|المبلغ\s*المحول|القيمة)\s*[:：\-]?\s*([\d\s,\.]+)\s*(?:DZD|DA|دج)?',
+            r'(?:Montant|Montant\s*du\s*virement|Montant\s*débité|Amount|Transfer\s*Amount|Total\s*Amount|المبلغ|المبلغ\s*المحول|القيمة)\s*[:：\-]?\s*([\d\s,\.]+)\s*(?:DZD|DA|دج)?',
             r'([\d\s,\.]+)\s*(?:DZD|DA|دج)\b',
+            r'(?:Montant\s*total|Somme)\s*[:：\-]?\s*([\d\s,\.]+)',
         ]
         for pat in amount_patterns:
             matches = re.finditer(pat, text, re.IGNORECASE)
@@ -352,28 +409,16 @@ class ReceiptParserService:
             if parsed_fee:
                 result["fee_dzd"] = parsed_fee
 
-        # 4. RIP Numbers (20 digits starting with 007)
+        # 4. Recipient RIP Number (20 digits starting with 007)
+        # Note: Algérie Poste BaridiMob transfer receipts ONLY contain the recipient RIP. Sender RIP is never present on the receipt.
         recip_match = re.search(r'(?:Recipient|Destinataire|Beneficiary|المستفيد)\s*[:：\-]?\s*(007\d{17})', text, re.IGNORECASE)
         if recip_match:
             result["recipient_rip"] = recip_match.group(1).strip()
-
-        sender_match = re.search(r'(?:Sender|Emetteur|Exp[ée]diteur|المرسل)\s*[:：\-]?\s*(007\d{17})', text, re.IGNORECASE)
-        if sender_match:
-            result["sender_rip"] = sender_match.group(1).strip()
-
-        # Fallback to positional RIPs if contextual search did not find both
-        rips = re.findall(r'\b(007\d{17})\b', text)
-        if not result["recipient_rip"]:
-            if len(rips) >= 2:
-                result["sender_rip"] = rips[0]
-                result["recipient_rip"] = rips[1]
-            elif len(rips) == 1:
+        else:
+            # Fallback to the 20-digit BaridiMob RIP found on the receipt
+            rips = re.findall(r'\b(007\d{17})\b', text)
+            if rips:
                 result["recipient_rip"] = rips[0]
-        elif not result["sender_rip"] and len(rips) >= 2:
-            for r in rips:
-                if r != result["recipient_rip"]:
-                    result["sender_rip"] = r
-                    break
 
         # 5. Date
         date_match = re.search(r'(\d{2}[\/\-\.]\d{2}[\/\-\.]\d{4}(?:\s+\d{2}:\d{2}(?::\d{2})?)?)', text)

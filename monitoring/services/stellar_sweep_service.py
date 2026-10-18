@@ -75,6 +75,7 @@ class StellarSweepService:
             logger.error(err)
 
         # 2. Check Destination Vault Wallets (Per-Family or Central Vaults)
+        # 2. Check Destination Vault Wallets (Per-Family or Central Vaults)
         if family == 'GAME':
             profit_vault = (
                 StellarWallet.objects.filter(family=WalletFamily.GAME, role=WalletRole.PROFIT, is_active=True).first() or
@@ -89,6 +90,34 @@ class StellarSweepService:
                 role=WalletRole.COLLECTION,
                 is_active=True
             ))
+        elif family in ['FACTURE', 'UTILITY']:
+            profit_vault = (
+                StellarWallet.objects.filter(family=WalletFamily.FACTURE, role=WalletRole.PROFIT, is_active=True).first() or
+                StellarWallet.objects.filter(role=WalletRole.PROFIT, is_active=True).first()
+            )
+            sweep_vault = (
+                StellarWallet.objects.filter(family=WalletFamily.FACTURE, role=WalletRole.WITHDRAWAL, is_active=True).first() or
+                StellarWallet.objects.filter(family=WalletFamily.TREASURY, role=WalletRole.VAULT, is_active=True).first()
+            )
+            collection_wallets = list(StellarWallet.objects.filter(
+                family=WalletFamily.FACTURE,
+                role=WalletRole.COLLECTION,
+                is_active=True
+            ))
+        elif family == 'ESIM':
+            profit_vault = (
+                StellarWallet.objects.filter(family=WalletFamily.ESIM, role=WalletRole.PROFIT, is_active=True).first() or
+                StellarWallet.objects.filter(role=WalletRole.PROFIT, is_active=True).first()
+            )
+            sweep_vault = (
+                StellarWallet.objects.filter(family=WalletFamily.TREASURY, role=WalletRole.VAULT, is_active=True).first() or
+                StellarWallet.objects.filter(role=WalletRole.WITHDRAWAL, is_active=True).first()
+            )
+            collection_wallets = list(StellarWallet.objects.filter(
+                family=WalletFamily.ESIM,
+                role=WalletRole.COLLECTION,
+                is_active=True
+            ))
         else:
             sweep_vault = (
                 StellarWallet.objects.filter(family=WalletFamily.TREASURY, role=WalletRole.VAULT, is_active=True).first() or
@@ -100,9 +129,9 @@ class StellarSweepService:
                 StellarWallet.objects.filter(category='PROFIT_VAULT', is_active=True).first()
             )
             collection_wallets = list(StellarWallet.objects.filter(
-                models.Q(role=WalletRole.COLLECTION) | models.Q(category='GAMING'),
+                role=WalletRole.COLLECTION,
                 is_active=True
-            ).exclude(role__in=[WalletRole.WITHDRAWAL, WalletRole.PROFIT, WalletRole.VAULT]))
+            ))
 
         if not sweep_vault:
             errors.append("⚠️ Sweep destination wallet is NOT configured or inactive. Please activate a Games Withdrawal Wallet or Master Vault.")
@@ -147,6 +176,20 @@ class StellarSweepService:
 
         can_proceed = len(errors) == 0
 
+        sweep_vault_info = {
+            "id": sweep_vault.id,
+            "name": sweep_vault.name,
+            "public_address": sweep_vault.public_address,
+            "dzt_balance": float(sweep_vault.dzt_balance),
+        } if sweep_vault else None
+
+        profit_vault_info = {
+            "id": profit_vault.id,
+            "name": profit_vault.name,
+            "public_address": profit_vault.public_address,
+            "dzt_balance": float(profit_vault.dzt_balance),
+        } if profit_vault else None
+
         return {
             "can_proceed": can_proceed,
             "date": date_str,
@@ -156,8 +199,10 @@ class StellarSweepService:
             "today_orders": today_orders,
             "total_collection_dzt": total_collection_dzt,
             "total_ready_collection_dzt": total_ready_collection_dzt,
-            "sweep_vault": sweep_vault,
-            "profit_vault": profit_vault,
+            "sweep_vault": sweep_vault_info,
+            "profit_vault": profit_vault_info,
+            "sweep_vault_obj": sweep_vault,
+            "profit_vault_obj": profit_vault,
             "collection_wallets": wallets_audit_info,
             "errors": errors,
             "warnings": warnings,
@@ -293,8 +338,8 @@ class StellarSweepService:
                 "audit": audit
             }
 
-        sweep_vault = audit["sweep_vault"]
-        profit_vault = audit["profit_vault"]
+        sweep_vault = audit.get("sweep_vault_obj")
+        profit_vault = audit.get("profit_vault_obj")
         today_profit = audit["today_profit"]
         remaining_profit_to_allocate = today_profit
         executed_transfers = []
@@ -323,11 +368,23 @@ class StellarSweepService:
                 role=WalletRole.COLLECTION,
                 is_active=True
             ))
+        elif family in ['FACTURE', 'UTILITY']:
+            collection_wallets = list(StellarWallet.objects.filter(
+                family=WalletFamily.FACTURE,
+                role=WalletRole.COLLECTION,
+                is_active=True
+            ))
+        elif family == 'ESIM':
+            collection_wallets = list(StellarWallet.objects.filter(
+                family=WalletFamily.ESIM,
+                role=WalletRole.COLLECTION,
+                is_active=True
+            ))
         else:
             collection_wallets = list(StellarWallet.objects.filter(
-                models.Q(role=WalletRole.COLLECTION) | models.Q(category='GAMING'),
+                role=WalletRole.COLLECTION,
                 is_active=True
-            ).exclude(role__in=[WalletRole.WITHDRAWAL, WalletRole.PROFIT, WalletRole.VAULT]))
+            ))
 
         for wallet in collection_wallets:
             if wallet.dzt_balance <= Decimal("0.0000"):
@@ -380,6 +437,10 @@ class StellarSweepService:
 
         # Refresh wallet balances
         StellarService.sync_all_wallets()
+
+        # Clean model instances so audit is 100% JSON serializable
+        audit.pop("sweep_vault_obj", None)
+        audit.pop("profit_vault_obj", None)
 
         return {
             "success": True,

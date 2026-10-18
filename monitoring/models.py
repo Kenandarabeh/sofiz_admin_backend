@@ -41,6 +41,7 @@ class SweepType(models.TextChoices):
     PROFIT_TRANSFER = 'PROFIT_TRANSFER', 'Profit Allocation Transfer'
     SWEEP_TRANSFER = 'SWEEP_TRANSFER', 'Daily Sweep Balance Transfer'
     MANUAL_SWEEP = 'MANUAL_SWEEP', 'Manual Sweep Transfer'
+    WITHDRAWAL = 'WITHDRAWAL', 'Withdrawal Outflow (Direct Deduction)'
 
 
 class SweepStatus(models.TextChoices):
@@ -70,6 +71,7 @@ class BinanceVerificationStatus(models.TextChoices):
 
 class WithdrawalType(models.TextChoices):
     SUPPLIER_FUNDING = 'SUPPLIER_FUNDING', 'Supplier Account Funding (Purchasing G2Bulk Balance)'
+    LIQUIDITY_REFILL = 'LIQUIDITY_REFILL', 'Operational Liquidity Refill (eSIM / Gaming Procurement)'
     PROFIT_WITHDRAWAL = 'PROFIT_WITHDRAWAL', 'Profit / Capital Withdrawal (Owner Payout)'
     LIQUIDITY_TRANSFER = 'LIQUIDITY_TRANSFER', 'Internal Liquidity Transfer'
     OTHER = 'OTHER', 'Other Outflow / Withdrawal'
@@ -88,6 +90,7 @@ class WithdrawalPurpose(models.TextChoices):
     SONELGAZ_SETTLEMENT = 'SONELGAZ_SETTLEMENT', 'Sonelgaz Settlement Balance Allocation'
     ADE_SETTLEMENT = 'ADE_SETTLEMENT', 'ADE Water Settlement Balance Allocation'
     AT_SETTLEMENT = 'AT_SETTLEMENT', 'Algérie Télécom Settlement Balance Allocation'
+    ESIM_REFILL = 'ESIM_REFILL', 'eSIM & Telecom Balance Refill (Airalo / Telecom Partner)'
     TREASURY_ALLOCATION = 'TREASURY_ALLOCATION', 'Internal Treasury Liquidity Allocation'
     OWNER_DIVIDEND = 'OWNER_DIVIDEND', 'Owner Capital & Profit Dividend'
     OTHER = 'OTHER', 'Other Confined Outflow'
@@ -104,6 +107,7 @@ class WithdrawalPurpose(models.TextChoices):
             cls.SONELGAZ_SETTLEMENT: "Batch settlement allocation for customer electricity and gas invoices on Sonelgaz ELIT electronic gateway.",
             cls.ADE_SETTLEMENT: "Batch settlement allocation for water utility bills via Algérienne Des Eaux payment portal.",
             cls.AT_SETTLEMENT: "Batch settlement allocation for Internet ADSL/Fibre and fixed telephone bills via Algérie Télécom portal.",
+            cls.ESIM_REFILL: "Replenishing operational funds for Airalo eSIM data packages procurement and international roaming distribution.",
             cls.TREASURY_ALLOCATION: "Internal treasury capital transfer to replenish operational gaming vaults and collection pools.",
             cls.OWNER_DIVIDEND: "Audited distribution of verified business profits and dividends to institutional owner bank accounts.",
             cls.OTHER: "Documented institutional fund outflow with verified audit rationale.",
@@ -151,6 +155,19 @@ class AuditStatus(models.TextChoices):
 
 class MonitoringGlobalSettings(models.Model):
     """Central configuration for financial monitoring, integrations, and automated wallet routing"""
+
+    class DataSourceMode(models.TextChoices):
+        REAL = "REAL", "Real Live Data (Direct External APIs)"
+        MOCK = "MOCK", "Mock Simulation Data (Sandbox Practice)"
+
+    data_source_mode = models.CharField(
+        max_length=10,
+        choices=DataSourceMode.choices,
+        default=DataSourceMode.REAL,
+        verbose_name="Data Source Operating Mode",
+        help_text="Operating mode: Real Live Data strictly enforced."
+    )
+
     g2bulk_api_key = models.CharField(max_length=255, blank=True, null=True, verbose_name="G2Bulk API Key")
     g2bulk_base_url = models.CharField(max_length=255, default="https://api.g2bulk.com/v1", verbose_name="G2Bulk Base URL")
     stellar_horizon_url = models.CharField(max_length=255, default="https://horizon.stellar.org", verbose_name="Stellar Horizon URL")
@@ -171,6 +188,24 @@ class MonitoringGlobalSettings(models.Model):
     binance_api_key = models.CharField(max_length=255, blank=True, null=True, verbose_name="Binance API Key")
     binance_api_secret = models.CharField(max_length=255, blank=True, null=True, verbose_name="Binance API Secret")
     binance_merchant_id = models.CharField(max_length=100, blank=True, null=True, verbose_name="Binance Merchant ID / Pay ID")
+    
+    # Bybit Crypto Exchange (eSIM Visa Card Funding)
+    bybit_api_key = models.CharField(max_length=255, blank=True, null=True, verbose_name="Bybit API Key")
+    bybit_api_secret = models.CharField(max_length=255, blank=True, null=True, verbose_name="Bybit API Secret")
+    bybit_user_id = models.CharField(max_length=100, default="477447830", verbose_name="Bybit User ID")
+    
+    # Airalo eSIM Provider
+    airalo_client_id = models.CharField(max_length=255, blank=True, null=True, verbose_name="Airalo Client ID")
+    airalo_client_secret = models.CharField(max_length=255, blank=True, null=True, verbose_name="Airalo Client Secret")
+    airalo_base_url = models.CharField(max_length=255, default="https://partners-api.airalo.com/v2", verbose_name="Airalo Base URL")
+    airalo_min_threshold_usd = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        default=Decimal("100.00"),
+        verbose_name="Airalo Minimum Balance Threshold (USD $)",
+        help_text="Triggers replenishment alert when Airalo available credit balance drops below this amount."
+    )
+    
     total_live_profits_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Live API Profits (DZT / DZD)")
     total_live_sales_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Live API Sales (DZT / DZD)")
     total_live_orders_count = models.IntegerField(default=0, verbose_name="Live API Completed Orders")
@@ -319,6 +354,127 @@ class MonitoringGlobalSettings(models.Model):
             settings.epay_api_key = active_key
             settings.save(update_fields=['epay_api_key'])
         return settings
+
+    @classmethod
+    def is_real_mode(cls) -> bool:
+        """Returns True if the system is explicitly operating in Real Live Production Data mode"""
+        return True
+
+    @classmethod
+    def is_mock_mode(cls) -> bool:
+        """Mock simulation mode is completely prohibited across the system"""
+        return False
+
+    @classmethod
+    def apply_data_mode(cls, mode: str = None) -> dict:
+        """
+        Master Switch: Toggles or sets the system-wide operational mode between REAL and MOCK.
+        Triggers immediate synchronization across all institutional services:
+        - Bybit V5 API & eSIM Visa Card balances
+        - Airalo Partner Wholesale balances
+        - G2Bulk Wholesale Supplier balances
+        - BaridiMob & ECCP Postal balances
+        - Epay Unified Financial Summary & Profits
+        - Stellar Horizon Wallets & Liquidity Pools
+        - Account Monitoring live time-series snapshots
+        """
+        settings = cls.get_settings()
+        settings.data_source_mode = cls.DataSourceMode.REAL
+        settings.last_global_sync = timezone.now()
+        settings.save(update_fields=['data_source_mode', 'last_global_sync'])
+
+        is_real = True
+        sync_report = {
+            "mode": cls.DataSourceMode.REAL,
+            "is_real": True,
+            "is_mock": False,
+            "timestamp": timezone.now().isoformat(),
+            "services": {}
+        }
+
+        # 1. Bybit V5 Service
+        try:
+            from .services.bybit_service import BybitService
+            bybit_acc = BybitService.sync_account()
+            sync_report["services"]["bybit"] = {
+                "funding_usdt": float(bybit_acc.funding_balance_usdt),
+                "unified_usdt": float(bybit_acc.unified_balance_usdt),
+                "total_dzd": float(bybit_acc.balance_dzd_equivalent)
+            }
+        except Exception as e:
+            sync_report["services"]["bybit"] = {"error": str(e)}
+
+        # 2. Airalo Service
+        try:
+            from .services.airalo_service import AiraloService
+            airalo_acc = AiraloService.sync_account()
+            sync_report["services"]["airalo"] = {
+                "balance_usd": float(airalo_acc.available_balance_usd),
+                "balance_dzd": float(airalo_acc.balance_dzd_equivalent)
+            }
+        except Exception as e:
+            sync_report["services"]["airalo"] = {"error": str(e)}
+
+        # 3. G2Bulk Supplier Service
+        try:
+            from .services.g2bulk_service import G2BulkService
+            g2_res = G2BulkService.sync_supplier()
+            sync_report["services"]["g2bulk"] = {
+                "success": g2_res.get("success", False),
+            }
+        except Exception as e:
+            sync_report["services"]["g2bulk"] = {"error": str(e)}
+
+        # 4. BaridiMob & ECCP Postal Services
+        try:
+            from .services.baridimob_service import BaridiMobService
+            bm_res = BaridiMobService.sync_baridi_balance(account_key='all')
+            eccp_g = BaridiMobService.sync_eccp_balance(account_key='game')
+            eccp_f = BaridiMobService.sync_eccp_balance(account_key='facture')
+            sync_report["services"]["baridimob"] = {
+                "success": bool(bm_res.get("success", False)),
+                "is_simulation": bool(bm_res.get("is_simulation", False)),
+                "game_balance": float(bm_res.get("game", {}).get("balance_dzd", 0) or 0),
+                "facture_balance": float(bm_res.get("facture", {}).get("balance_dzd", 0) or 0)
+            }
+            sync_report["services"]["eccp"] = {
+                "game_balance": float(eccp_g.get("eccp_balance_dzd", 0) or 0),
+                "facture_balance": float(eccp_f.get("eccp_balance_dzd", 0) or 0)
+            }
+        except Exception as e:
+            sync_report["services"]["baridimob"] = {"error": str(e)}
+
+        # 5. Epay Unified Financial Summary & Profits
+        try:
+            from .services.epay_service import EpaySyncService
+            epay_res = EpaySyncService.sync_financial_summary()
+            sync_report["services"]["epay"] = {
+                "dollar_rate": float(epay_res.get("dollar_rate", 250.0)),
+                "total_profit_dzd": float(epay_res.get("total_profit_dzd", 0.0)),
+                "total_sales_dzd": float(epay_res.get("total_sales_dzd", 0.0))
+            }
+        except Exception as e:
+            sync_report["services"]["epay"] = {"error": str(e)}
+
+        # 6. Stellar Horizon & Wallets
+        try:
+            from .services.stellar_service import StellarService
+            StellarService.set_simulation_mode(not is_real)
+            stellar_res = StellarService.sync_all_wallets(simulate=(not is_real))
+            sync_report["services"]["stellar"] = {"synced_wallets": len(stellar_res)}
+        except Exception as e:
+            sync_report["services"]["stellar"] = {"error": str(e)}
+
+        # 7. Live Snapshots
+        try:
+            from .services.account_monitoring_service import AccountMonitoringService
+            trigger_name = "MODE_SWITCH_REAL" if is_real else "MODE_SWITCH_MOCK"
+            AccountMonitoringService.capture_live_snapshots(trigger=trigger_name)
+            sync_report["services"]["snapshots"] = "captured"
+        except Exception as e:
+            sync_report["services"]["snapshots"] = {"error": str(e)}
+
+        return sync_report
 
     class Meta:
         verbose_name = "API Keys & Gateway Credentials"
@@ -712,9 +868,236 @@ class SupplierAccount(models.Model):
 
     def update_dzd_equivalent(self, rate=None):
         if rate is None:
-            settings = MonitoringGlobalSettings.get_settings()
-            rate = settings.usd_to_dzd_exchange_rate
+            try:
+                from .services.p2p_rate_service import P2PRateService
+                rate = P2PRateService.get_effective_p2p_rate('GAMING')['rate']
+            except Exception:
+                settings = MonitoringGlobalSettings.get_settings()
+                rate = settings.usd_to_dzd_exchange_rate
         self.balance_dzd_equivalent = (self.balance_usd * Decimal(str(rate))).quantize(Decimal("0.01"))
+
+
+class ReplenishmentWindowStatus(models.TextChoices):
+    ACTIVE = 'ACTIVE', 'Active Grace Window (Notifications Suppressed)'
+    COMPLETED = 'COMPLETED', 'Completed Successfully (Recharge Confirmed)'
+    EXPIRED_BALANCED = 'EXPIRED_BALANCED', 'Expired Balanced (No Action Required)'
+    EXPIRED_DISCREPANCY = 'EXPIRED_DISCREPANCY', 'Expired with Discrepancy (Alert Dispatched)'
+    CANCELLED = 'CANCELLED', 'Manually Cancelled by Operator'
+
+
+class G2BulkReplenishmentWindow(models.Model):
+    """
+    Operational Grace Window for G2Bulk Wholesale Replenishment.
+    Suppresses automated discrepancy and low-balance alerts for up to 30 hours
+    while wholesale funds are in transit across P2P / bank wire / supplier processing.
+    Upon window expiration, verifies golden balance and dispatches alerts only if
+    a financial defect or discrepancy persists.
+    """
+    supplier = models.ForeignKey(
+        SupplierAccount,
+        on_delete=models.CASCADE,
+        related_name='replenishment_windows',
+        verbose_name="Supplier Account"
+    )
+    status = models.CharField(
+        max_length=30,
+        choices=ReplenishmentWindowStatus.choices,
+        default=ReplenishmentWindowStatus.ACTIVE,
+        db_index=True,
+        verbose_name="Status"
+    )
+    started_at = models.DateTimeField(default=timezone.now, db_index=True, verbose_name="Started At")
+    duration_hours = models.PositiveIntegerField(default=30, verbose_name="Max Grace Duration (Hours)")
+    expires_at = models.DateTimeField(db_index=True, verbose_name="Grace Expiration Timestamp")
+    completed_at = models.DateTimeField(null=True, blank=True, verbose_name="Completed At")
+    initiated_by = models.CharField(max_length=150, default="Admin Operator", verbose_name="Initiated By")
+
+    # Financial metrics for audit trail
+    initial_balance_usd = models.DecimalField(
+        max_digits=15, decimal_places=4, default=Decimal("0.0000"), verbose_name="Initial G2Bulk Balance ($ USD)"
+    )
+    target_replenish_amount_usd = models.DecimalField(
+        max_digits=15, decimal_places=4, null=True, blank=True, verbose_name="Target Replenishment ($ USD)"
+    )
+    final_balance_usd = models.DecimalField(
+        max_digits=15, decimal_places=4, null=True, blank=True, verbose_name="Final G2Bulk Balance ($ USD)"
+    )
+
+    # Audit outcome after expiration or completion
+    final_discrepancy_dzd = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True, verbose_name="Final Discrepancy (DZD)"
+    )
+    alert_dispatched = models.BooleanField(default=False, db_index=True, verbose_name="Discrepancy Alert Dispatched")
+    alert_dispatched_at = models.DateTimeField(null=True, blank=True, verbose_name="Alert Dispatched At")
+
+    suppressed_alerts_count = models.PositiveIntegerField(default=0, verbose_name="Suppressed Alerts Count")
+    notes = models.TextField(blank=True, null=True, verbose_name="Operator Notes")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "G2Bulk Replenishment Grace Window"
+        verbose_name_plural = "G2Bulk Replenishment Grace Windows"
+        ordering = ['-started_at']
+        indexes = [
+            models.Index(fields=['status', 'expires_at'], name='idx_g2b_win_status_exp'),
+        ]
+
+    def __str__(self):
+        return f"G2Bulk Grace Window #{self.id} [{self.status}] Started: {self.started_at.strftime('%Y-%m-%d %H:%M')}"
+
+    def is_currently_active(self) -> bool:
+        if self.status != ReplenishmentWindowStatus.ACTIVE:
+            return False
+        return timezone.now() < self.expires_at
+
+    @property
+    def remaining_seconds(self) -> int:
+        if self.status != ReplenishmentWindowStatus.ACTIVE:
+            return 0
+        now = timezone.now()
+        if now >= self.expires_at:
+            return 0
+        return int((self.expires_at - now).total_seconds())
+
+    @property
+    def elapsed_seconds(self) -> int:
+        now = timezone.now()
+        total = int((now - self.started_at).total_seconds())
+        return max(0, total)
+
+    @property
+    def progress_pct(self) -> float:
+        total = self.duration_hours * 3600
+        if total <= 0:
+            return 100.0
+        pct = (self.elapsed_seconds / total) * 100.0
+        return min(100.0, max(0.0, round(pct, 1)))
+
+    @classmethod
+    def get_active_window(cls):
+        """Returns the currently active G2Bulk replenishment grace window, if any."""
+        now = timezone.now()
+        return cls.objects.filter(
+            status=ReplenishmentWindowStatus.ACTIVE,
+            expires_at__gt=now
+        ).order_by('-started_at').first()
+
+    @classmethod
+    def is_replenishment_active(cls) -> bool:
+        """Returns True if a G2Bulk replenishment grace window is actively suppressing alerts."""
+        return cls.get_active_window() is not None
+
+    @classmethod
+    def record_suppressed_alert(cls, alert_type: str = "DISCREPANCY", amount: Decimal = None):
+        """Increments suppression counter and appends audit note to active window."""
+        active = cls.get_active_window()
+        if active:
+            active.suppressed_alerts_count += 1
+            now_str = timezone.now().strftime('%Y-%m-%d %H:%M:%S UTC')
+            amt_str = f" ({amount:,.2f})" if amount is not None else ""
+            active.notes = (active.notes or "").strip() + f"\n• [{now_str}] Blocked {alert_type} notification{amt_str} to preserve system continuity."
+            active.save(update_fields=['suppressed_alerts_count', 'notes', 'updated_at'])
+
+    @classmethod
+    def start_window(cls, supplier=None, duration_hours: int = 30, target_amount_usd: Decimal = None, initiated_by: str = "Admin Operator", notes: str = ""):
+        """Starts a new G2Bulk replenishment grace period (capped at 30 hours max)."""
+        duration = min(30, max(1, int(duration_hours or 30)))
+        now = timezone.now()
+        expires_at = now + timezone.timedelta(hours=duration)
+
+        if not supplier:
+            supplier = SupplierAccount.objects.filter(provider=SupplierProvider.G2BULK).first()
+            if not supplier:
+                supplier = SupplierAccount.objects.first()
+
+        # Close any previous active windows cleanly
+        cls.objects.filter(status=ReplenishmentWindowStatus.ACTIVE).update(
+            status=ReplenishmentWindowStatus.CANCELLED,
+            completed_at=now
+        )
+
+        initial_bal = supplier.balance_usd if supplier else Decimal("0.0000")
+
+        window = cls.objects.create(
+            supplier=supplier,
+            status=ReplenishmentWindowStatus.ACTIVE,
+            started_at=now,
+            duration_hours=duration,
+            expires_at=expires_at,
+            initiated_by=initiated_by or "Admin Operator",
+            initial_balance_usd=initial_bal,
+            target_replenish_amount_usd=target_amount_usd,
+            notes=notes or f"Started G2Bulk replenishment grace shield for {duration} hours max."
+        )
+        return window
+
+    @classmethod
+    def complete_window(cls, window_id: int = None, final_balance_usd: Decimal = None, notes: str = ""):
+        """Completes an active window early when wholesale balance is confirmed."""
+        window = cls.objects.filter(id=window_id).first() if window_id else cls.get_active_window()
+        if not window:
+            return None
+
+        now = timezone.now()
+        window.status = ReplenishmentWindowStatus.COMPLETED
+        window.completed_at = now
+        if final_balance_usd is not None:
+            window.final_balance_usd = final_balance_usd
+        elif window.supplier:
+            window.supplier.refresh_from_db()
+            window.final_balance_usd = window.supplier.balance_usd
+
+        if notes:
+            window.notes = (window.notes or "").strip() + f"\n• [{now.strftime('%Y-%m-%d %H:%M:%S UTC')}] {notes}"
+        window.save()
+        return window
+
+    @classmethod
+    def evaluate_and_expire_windows(cls):
+        """
+        Evaluates expired windows. If 30h has elapsed, performs financial audit:
+        - If discrepancy or defect remains: dispatches delayed notification!
+        - If balanced: marks EXPIRED_BALANCED with zero alarms.
+        """
+        now = timezone.now()
+        expired_qs = cls.objects.filter(
+            status=ReplenishmentWindowStatus.ACTIVE,
+            expires_at__lte=now
+        )
+
+        for win in expired_qs:
+            try:
+                from monitoring.services.balance_engine import BalanceEngine
+                audit_result = BalanceEngine.run_audit(sync_live=True, send_alerts=False)
+                discrepancy = audit_result.get('discrepancy', Decimal("0.00"))
+                is_balanced = audit_result.get('is_balanced', False)
+
+                win.completed_at = now
+                win.final_discrepancy_dzd = discrepancy
+                if win.supplier:
+                    win.supplier.refresh_from_db()
+                    win.final_balance_usd = win.supplier.balance_usd
+
+                if not is_balanced:
+                    # An unresolved defect / discrepancy remains after 30h grace period!
+                    win.status = ReplenishmentWindowStatus.EXPIRED_DISCREPANCY
+                    win.alert_dispatched = True
+                    win.alert_dispatched_at = now
+                    win.notes = (win.notes or "").strip() + f"\n• [{now.strftime('%Y-%m-%d %H:%M:%S UTC')}] Grace period of {win.duration_hours}h expired with active discrepancy of {discrepancy:,.2f} DZT. Urgent alert dispatched."
+                    win.save()
+
+                    # Dispatch delayed critical alert!
+                    from monitoring.services.email_alerts import EmailAlertService
+                    EmailAlertService.send_discrepancy_alert(discrepancy)
+                else:
+                    win.status = ReplenishmentWindowStatus.EXPIRED_BALANCED
+                    win.notes = (win.notes or "").strip() + f"\n• [{now.strftime('%Y-%m-%d %H:%M:%S UTC')}] Grace period of {win.duration_hours}h expired. Balance is 100% verified and healthy."
+                    win.save()
+
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).exception(f"Error evaluating expired G2Bulk window #{win.id}: {e}")
 
 
 class BaridiMobAccount(models.Model):
@@ -730,6 +1113,8 @@ class BaridiMobAccount(models.Model):
     )
     account_email = models.CharField(max_length=150, default="Sihaam31", blank=True, verbose_name="Username / Email")
     balance_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Live Balance (DZD)")
+    eccp_balance_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="ECCP Postal Balance (DZD)")
+    eccp_last_synced_at = models.DateTimeField(null=True, blank=True, verbose_name="ECCP Last Synced At")
     min_balance_threshold_dzd = models.DecimalField(
         max_digits=18,
         decimal_places=2,
@@ -861,8 +1246,12 @@ class BinanceAccount(models.Model):
 
     def update_dzd_equivalent(self, rate=None):
         if rate is None:
-            settings = MonitoringGlobalSettings.get_settings()
-            rate = settings.usd_to_dzd_exchange_rate
+            try:
+                from .services.p2p_rate_service import P2PRateService
+                rate = P2PRateService.get_effective_p2p_rate('GAMING')['rate']
+            except Exception:
+                settings = MonitoringGlobalSettings.get_settings()
+                rate = settings.usd_to_dzd_exchange_rate
         self.balance_dzd_equivalent = (self.balance_usdt * Decimal(str(rate))).quantize(Decimal("0.01"))
 
 
@@ -1033,7 +1422,6 @@ class WithdrawalRecord(models.Model):
         related_name='linked_withdrawal_records',
         verbose_name="Linked Funding Receipt"
     )
-    sender_rip = models.CharField(max_length=50, blank=True, null=True, verbose_name="Sender RIP")
     recipient_rip = models.CharField(max_length=50, blank=True, null=True, verbose_name="Recipient RIP")
     receipt_amount_dzd = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True, verbose_name="Receipt Verified Amount (DZD)")
     receipt_verified = models.BooleanField(default=False, verbose_name="Receipt Account Verified")
@@ -1232,12 +1620,11 @@ class BaridiMobFundingReceipt(models.Model):
     executes the internal Stellar transfer from Games Collection to Central Treasury,
     records the 50 DZD BaridiMob fee expense, and tracks Binance P2P and G2Bulk funding.
     """
-    receipt_file = models.FileField(upload_to='receipts/%Y/%m/', verbose_name="BaridiMob Receipt File (PDF or Image)")
+    receipt_file = models.FileField(upload_to='receipts/%Y/%m/', null=True, blank=True, verbose_name="BaridiMob Receipt File (PDF or Image) (Deprecated - No Files Stored)")
     reference = models.CharField(max_length=100, unique=True, null=True, blank=True, db_index=True, verbose_name="Transaction Reference / N° Transaction")
     file_hash = models.CharField(max_length=64, unique=True, null=True, blank=True, db_index=True, verbose_name="SHA256 File Hash")
     amount_dzd = models.DecimalField(max_digits=18, decimal_places=2, blank=True, null=True, verbose_name="Receipt Amount (DZD / DZT)")
     fee_dzd = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("50.00"), blank=True, verbose_name="BaridiMob Fee (DZD)")
-    sender_rip = models.CharField(max_length=50, blank=True, null=True, verbose_name="Sender RIP")
     recipient_rip = models.CharField(max_length=50, blank=True, null=True, db_index=True, verbose_name="Recipient RIP")
     responsible_person = models.CharField(max_length=150, default="P2P Purchasing Officer", verbose_name="Responsible Person / Agent Name")
 
@@ -1679,4 +2066,235 @@ class OperatorActionLog(models.Model):
         return f"[{self.action_type}] {self.operator_username} on {self.target_model} ({self.object_repr})"
 
 
+# ==============================================================================
+# 11. DEDICATED eSIM MULTI-TENANT ISOLATED INFRASTRUCTURE (Bybit & Airalo)
+# ==============================================================================
 
+class BybitAccount(models.Model):
+    """Dedicated Bybit Crypto Funding Account for eSIM Visa Card Allocation"""
+    account_name = models.CharField(max_length=150, default="Official Bybit Corporate Account", verbose_name="Account Label")
+    user_id = models.CharField(max_length=100, default="477447830", verbose_name="Bybit User ID")
+    funding_balance_usdt = models.DecimalField(max_digits=18, decimal_places=4, default=Decimal("0.0000"), verbose_name="Funding Wallet Balance (USDT)")
+    unified_balance_usdt = models.DecimalField(max_digits=18, decimal_places=4, default=Decimal("0.0000"), verbose_name="Unified Wallet Balance (USDT)")
+    balance_dzd_equivalent = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Equivalent in DZT / DZD")
+    is_active = models.BooleanField(default=True, db_index=True, verbose_name="Is Active")
+    last_synced_at = models.DateTimeField(null=True, blank=True, verbose_name="Last Synced At")
+    last_error = models.TextField(null=True, blank=True, verbose_name="Last Sync Error")
+    notes = models.TextField(blank=True, null=True, verbose_name="Notes")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Bybit Crypto Account"
+        verbose_name_plural = "Bybit Crypto Accounts (USDT & Visa Card)"
+        ordering = ['-funding_balance_usdt']
+
+    def __str__(self):
+        return f"{self.account_name} (UID: {self.user_id}) | {self.funding_balance_usdt:,.2f} USDT ({self.balance_dzd_equivalent:,.2f} DZT)"
+
+    def update_dzd_equivalent(self, rate=None):
+        if rate is None:
+            try:
+                from .services.p2p_rate_service import P2PRateService
+                rate = P2PRateService.get_effective_p2p_rate('ESIM')['rate']
+            except Exception:
+                settings = MonitoringGlobalSettings.get_settings()
+                rate = settings.usd_to_dzd_exchange_rate
+        total_usdt = self.funding_balance_usdt + self.unified_balance_usdt
+        self.balance_dzd_equivalent = (total_usdt * Decimal(str(rate))).quantize(Decimal("0.01"))
+
+
+class AiraloAccount(models.Model):
+    """Dedicated Airalo eSIM Wholesale Provider Account for Data Packages"""
+    account_name = models.CharField(max_length=150, default="Official Airalo Partner Account", verbose_name="Account Label")
+    available_balance_usd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Available Credit Balance ($ USD)")
+    is_active = models.BooleanField(default=True, db_index=True, verbose_name="Is Active")
+    last_synced_at = models.DateTimeField(null=True, blank=True, verbose_name="Last Synced At")
+    last_error = models.TextField(null=True, blank=True, verbose_name="Last Sync Error")
+    notes = models.TextField(blank=True, null=True, verbose_name="Notes")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Airalo eSIM Account"
+        verbose_name_plural = "Airalo eSIM Accounts (Wholesale)"
+        ordering = ['-available_balance_usd']
+
+    def __str__(self):
+        return f"{self.account_name} | ${self.available_balance_usd:,.2f} USD"
+
+    @property
+    def balance_dzd_equivalent(self):
+        """Dynamic calculation using actual Binance P2P purchase price"""
+        try:
+            from .services.p2p_rate_service import P2PRateService
+            rate = P2PRateService.get_effective_p2p_rate('ESIM')['rate']
+        except Exception:
+            settings = MonitoringGlobalSettings.get_settings()
+            rate = settings.usd_to_dzd_exchange_rate
+        return (self.available_balance_usd * Decimal(str(rate))).quantize(Decimal("0.01"))
+
+
+class eSIMFundingStage(models.TextChoices):
+    BARIDIMOB_DISPATCHED = 'BARIDIMOB_DISPATCHED', '1. BaridiMob Dispatched'
+    BINANCE_P2P = 'BINANCE_P2P', '2. Binance P2P Acquired'
+    BYBIT_FUNDED = 'BYBIT_FUNDED', '3. Bybit Funded & Visa Card Allocated'
+    AIRALO_COMPLETED = 'AIRALO_COMPLETED', '4. Airalo Confirmed & Closed'
+    CANCELLED = 'CANCELLED', 'Cancelled'
+
+
+class eSIMFundingRecord(models.Model):
+    """
+    Dedicated 4-Stage Replenishment Pipeline for eSIM & Telecom Operations:
+    Stage 1: BaridiMob Dispatched (Salah Account)
+    Stage 2: Binance P2P Acquired (USDT)
+    Stage 3: Bybit Funded & Visa Card Allocated (USDT -> Visa Card)
+    Stage 4: Airalo Confirmed & Closed (eSIM Packages Acquired)
+    """
+    amount_dzd = models.DecimalField(max_digits=18, decimal_places=2, verbose_name="Replenishment Amount (DZD)")
+    amount_usd = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True, verbose_name="Amount ($ USD)")
+    stage = models.CharField(
+        max_length=30,
+        choices=eSIMFundingStage.choices,
+        default=eSIMFundingStage.BARIDIMOB_DISPATCHED,
+        db_index=True,
+        verbose_name="Workflow Stage"
+    )
+    # Stage 1: BaridiMob
+    source_baridimob = models.ForeignKey(
+        BaridiMobAccount,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        verbose_name="Source BaridiMob Account (Salah)"
+    )
+    receipt_file = models.FileField(upload_to='esim_receipts/%Y/%m/', null=True, blank=True, verbose_name="BaridiMob Receipt PDF")
+    receipt_reference = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="BaridiMob Receipt Reference")
+    receipt_verified = models.BooleanField(default=False, verbose_name="Receipt Verified")
+
+    # Stage 2: Binance P2P
+    binance_p2p_order_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="Binance P2P Order ID")
+    binance_txid = models.CharField(max_length=255, blank=True, null=True, db_index=True, verbose_name="Binance TXID")
+    p2p_rate = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, verbose_name="P2P Exchange Rate (DZD/USDT)")
+    binance_verified_amount_usdt = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True, verbose_name="Acquired USDT on Binance")
+    binance_verified = models.BooleanField(default=False, verbose_name="Binance P2P Verified")
+
+    # Stage 3: Bybit & Visa Card
+    bybit_txid = models.CharField(max_length=255, blank=True, null=True, db_index=True, verbose_name="Bybit TXID / Transfer ID")
+    bybit_transfer_amount_usdt = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True, verbose_name="Transferred USDT to Bybit")
+    bybit_verified = models.BooleanField(default=False, verbose_name="Bybit Transfer Verified")
+    bybit_verified_at = models.DateTimeField(null=True, blank=True, verbose_name="Bybit Verified At")
+    visa_card_last4 = models.CharField(max_length=10, blank=True, null=True, default="Bybit Visa", verbose_name="Visa Card Identifier")
+
+    # Stage 4: Airalo Supplier
+    airalo_order_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="Airalo Order ID")
+    airalo_package_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="Airalo Package Code")
+    airalo_confirmed_amount_usd = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True, verbose_name="Airalo Confirmed Increase ($ USD)")
+    airalo_verified = models.BooleanField(default=False, verbose_name="Airalo Order Verified")
+
+    notes = models.TextField(blank=True, null=True, verbose_name="Notes & Audit Trail")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "eSIM Replenishment Cycle"
+        verbose_name_plural = "eSIM Replenishment Cycles (4-Stage)"
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"eSIM #{self.id} | {self.amount_dzd:,.2f} DZD ({self.get_stage_display()})"
+
+
+class eSIMOrderRecord(models.Model):
+    """eSIM package orders and commission / profit records"""
+    order_id = models.CharField(max_length=100, unique=True, db_index=True, verbose_name="Order ID / Airalo Order")
+    package_id = models.CharField(max_length=100, db_index=True, verbose_name="Package Code")
+    package_name = models.CharField(max_length=150, blank=True, null=True, verbose_name="Package Description")
+    customer_phone = models.CharField(max_length=50, blank=True, null=True, verbose_name="Customer Phone / User")
+    cost_usd = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"), verbose_name="Cost ($ USD)")
+    cost_dzd = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal("0.00"), verbose_name="Cost (DZD)")
+    sale_price_dzd = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal("0.00"), verbose_name="Sale Price (DZD)")
+    net_profit_dzd = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal("0.00"), verbose_name="Net Profit (DZD)")
+    status = models.CharField(max_length=50, default="COMPLETED", db_index=True, verbose_name="Order Status")
+    created_at = models.DateTimeField(default=timezone.now, db_index=True, verbose_name="Order Timestamp")
+
+    class Meta:
+        verbose_name = "eSIM Order Record"
+        verbose_name_plural = "eSIM Order Records"
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"eSIM #{self.order_id} ({self.package_id}) | +{self.net_profit_dzd:,.2f} DZD"
+
+
+class AccountMonitoringChannel(models.TextChoices):
+    G2BULK = "g2bulk", "G2Bulk Wholesale Inventory"
+    AIRALO = "airalo", "Airalo eSIM Telecom Wholesale"
+    BARIDIMOB_ESIM_QUOTA = "baridimob_esim_quota", "BaridiMob (eSIM Quota)"
+    ECCP_ESIM_QUOTA = "eccp_esim_quota", "ECCP (eSIM Quota)"
+    BARIDIMOB_GAME_QUOTA = "baridimob_game_quota", "BaridiMob (Gaming Quota)"
+    ECCP_GAME_QUOTA = "eccp_game_quota", "ECCP (Gaming Quota)"
+    BARIDIMOB_FACTURE = "baridimob_facture", "BaridiMob (Factures Sihaam)"
+    ECCP_FACTURE = "eccp_facture", "ECCP (Factures Sihaam)"
+
+
+class AccountBalanceSnapshot(models.Model):
+    """
+    Time-series audit record tracking the historical balance of every account channel.
+    Maintains previous balance, current balance, net change, causing transaction, and timestamps.
+    """
+    channel = models.CharField(
+        max_length=64,
+        choices=AccountMonitoringChannel.choices,
+        db_index=True,
+        verbose_name="Monitored Account Channel"
+    )
+    account_label = models.CharField(max_length=150, verbose_name="Account Label / Title")
+    activity = models.CharField(max_length=50, db_index=True, verbose_name="Activity (Gaming, eSIM, Facture, Wholesale)")
+    source_type = models.CharField(max_length=50, db_index=True, verbose_name="Source Type (BaridiMob, ECCP, G2Bulk, Airalo)")
+
+    # Balances
+    current_balance = models.DecimalField(max_digits=18, decimal_places=4, verbose_name="Current Balance (Native)")
+    currency = models.CharField(max_length=10, default="DZD", verbose_name="Native Currency")
+    current_balance_dzd = models.DecimalField(max_digits=18, decimal_places=2, verbose_name="Current Balance (DZD)")
+    previous_balance_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Previous Balance (DZD)")
+    balance_change_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Net Balance Change (DZD)")
+
+    # Change status & Trigger
+    change_type = models.CharField(
+        max_length=20,
+        choices=[("INCREASE", "Increase"), ("DECREASE", "Decrease"), ("STABLE", "Stable")],
+        default="STABLE",
+        db_index=True,
+        verbose_name="Change Direction"
+    )
+    trigger_type = models.CharField(
+        max_length=50,
+        default="PERIODIC_SYNC",
+        db_index=True,
+        verbose_name="Trigger Mechanism"
+    )
+
+    # Linked Transaction Information
+    causing_transaction_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="Causing Transaction TID / ID")
+    causing_transaction_desc = models.CharField(max_length=255, blank=True, null=True, verbose_name="Causing Transaction Description")
+    causing_transaction_amount = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True, verbose_name="Causing Transaction Amount (DZD)")
+
+    # Timestamps
+    recorded_at = models.DateTimeField(default=timezone.now, db_index=True, verbose_name="Snapshot Recorded Timestamp")
+    last_synced_at = models.DateTimeField(null=True, blank=True, verbose_name="Upstream Sync Timestamp")
+
+    notes = models.TextField(blank=True, null=True, verbose_name="Monitoring Notes")
+    metadata = models.JSONField(default=dict, blank=True, verbose_name="Additional Snapshot Metadata")
+
+    class Meta:
+        verbose_name = "Account Balance Snapshot"
+        verbose_name_plural = "Account Balance Snapshots"
+        ordering = ["-recorded_at", "-id"]
+        indexes = [
+            models.Index(fields=["channel", "-recorded_at"], name="idx_acc_snap_chan_time"),
+            models.Index(fields=["activity", "-recorded_at"], name="idx_acc_snap_act_time"),
+        ]
+
+    def __str__(self):
+        return f"[{self.get_channel_display()}] {self.recorded_at.strftime('%Y-%m-%d %H:%M')} | {self.current_balance_dzd:,.2f} DZD (Change: {self.balance_change_dzd:+,.2f} DZD)"

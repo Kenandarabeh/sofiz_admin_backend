@@ -11,6 +11,7 @@ from .models import (
     TaskComment,
     TaskActivityLog,
 )
+from monitoring.models import OperatorMissionRole
 
 
 class UserSummarySerializer(serializers.ModelSerializer):
@@ -19,6 +20,7 @@ class UserSummarySerializer(serializers.ModelSerializer):
     employee_code = serializers.SerializerMethodField()
     mission_role = serializers.SerializerMethodField()
     phone_number = serializers.SerializerMethodField()
+    can_assign_tasks_to_others = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -35,6 +37,7 @@ class UserSummarySerializer(serializers.ModelSerializer):
             'employee_code',
             'mission_role',
             'phone_number',
+            'can_assign_tasks_to_others',
         ]
 
     def get_full_name(self, obj) -> str:
@@ -48,6 +51,41 @@ class UserSummarySerializer(serializers.ModelSerializer):
         elif obj.is_staff and not roles:
             roles.append("STAFF_ADMIN")
         return list(set(roles))
+
+    def get_employee_code(self, obj) -> str:
+        profile = getattr(obj, 'operator_profile', None)
+        return profile.employee_code if profile else ''
+
+    def get_mission_role(self, obj) -> str:
+        profile = getattr(obj, 'operator_profile', None)
+        return profile.mission_role if profile else ''
+
+    def get_phone_number(self, obj) -> str:
+        profile = getattr(obj, 'operator_profile', None)
+        return profile.phone_number if profile else ''
+
+    def get_can_assign_tasks_to_others(self, obj) -> bool:
+        if obj.is_superuser:
+            return True
+        if obj.groups.filter(name__in=['Super Administrator', 'Full Multi-Family Administrator']).exists():
+            return True
+        profile = getattr(obj, 'operator_profile', None)
+        if profile and profile.mission_role == OperatorMissionRole.ALL_FAMILIES:
+            return True
+
+        if obj.username in ['sofiane_gaming', 'walid_withdrawal']:
+            return False
+
+        if profile and profile.mission_role in [
+            OperatorMissionRole.GAME_OPERATOR,
+            OperatorMissionRole.FACTURE_OPERATOR,
+            OperatorMissionRole.ESIM_OPERATOR,
+            OperatorMissionRole.TREASURY_OFFICER,
+            OperatorMissionRole.AUDITOR,
+        ]:
+            return False
+
+        return False
 
     def get_employee_code(self, obj) -> str:
         profile = getattr(obj, 'operator_profile', None)
@@ -187,10 +225,63 @@ class TaskSerializer(serializers.ModelSerializer):
     def get_comments_count(self, obj) -> int:
         return obj.comments.count()
 
+    def validate(self, attrs):
+        request = self.context.get('request')
+        if request and request.user and request.user.is_authenticated:
+            user = request.user
+            assignee = attrs.get('assignee')
+
+            # Check if assignee is provided and differs from the current user
+            if assignee and assignee.id != user.id:
+                is_admin = (
+                    user.is_superuser or
+                    user.groups.filter(name__in=['Super Administrator', 'Full Multi-Family Administrator']).exists()
+                )
+                profile = getattr(user, 'operator_profile', None)
+                is_all_families = profile and profile.mission_role == OperatorMissionRole.ALL_FAMILIES
+                project = attrs.get('project') or (self.instance.project if self.instance else None)
+                is_project_lead = project and project.lead_id == user.id
+
+                # Restricted operators (such as sofiane_gaming, walid_withdrawal, and departmental operators)
+                is_restricted_operator = (
+                    user.username in ['sofiane_gaming', 'walid_withdrawal'] or
+                    (profile and profile.mission_role in [
+                        OperatorMissionRole.GAME_OPERATOR,
+                        OperatorMissionRole.FACTURE_OPERATOR,
+                        OperatorMissionRole.ESIM_OPERATOR,
+                        OperatorMissionRole.TREASURY_OFFICER,
+                        OperatorMissionRole.AUDITOR,
+                    ])
+                )
+
+                if is_restricted_operator or not (is_admin or is_all_families or is_project_lead):
+                    raise serializers.ValidationError({
+                        'assignee_id': f"User '{user.username}' cannot assign tasks to other team members. Operators can only assign tasks to themselves."
+                    })
+
+        return attrs
+
     def create(self, validated_data):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
-            validated_data['reporter'] = request.user
+            user = request.user
+            validated_data['reporter'] = user
+
+            # Auto-assign to self if user is a restricted operator and no assignee was given
+            profile = getattr(user, 'operator_profile', None)
+            is_restricted_operator = (
+                user.username in ['sofiane_gaming', 'walid_withdrawal'] or
+                (profile and profile.mission_role in [
+                    OperatorMissionRole.GAME_OPERATOR,
+                    OperatorMissionRole.FACTURE_OPERATOR,
+                    OperatorMissionRole.ESIM_OPERATOR,
+                    OperatorMissionRole.TREASURY_OFFICER,
+                    OperatorMissionRole.AUDITOR,
+                ])
+            )
+            if is_restricted_operator and 'assignee' not in validated_data:
+                validated_data['assignee'] = user
+
         task = super().create(validated_data)
         TaskActivityLog.objects.create(
             task=task,
@@ -233,7 +324,6 @@ class TaskSerializer(serializers.ModelSerializer):
 class ProjectSerializer(serializers.ModelSerializer):
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     priority_display = serializers.CharField(source='get_priority_display', read_only=True)
-    item_type_display = serializers.CharField(source='get_item_type_display', read_only=True)
     lead = UserSummarySerializer(read_only=True)
     lead_id = serializers.PrimaryKeyRelatedField(
         queryset=User.objects.all(),

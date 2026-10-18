@@ -19,7 +19,12 @@ from .models import (
     ExpenseRecord,
     GameProfitRecord,
     UtilityBillRecord,
-    BalanceAuditLog
+    BalanceAuditLog,
+    BybitAccount,
+    AiraloAccount,
+    eSIMFundingRecord,
+    eSIMOrderRecord,
+    G2BulkReplenishmentWindow,
 )
 from .services.receipt_parser_service import ReceiptParserService
 from .services.stellar_sweep_service import StellarSweepService
@@ -34,6 +39,7 @@ class MonitoringGlobalSettingsSerializer(serializers.ModelSerializer):
         model = MonitoringGlobalSettings
         fields = [
             'id',
+            'data_source_mode',
             'usd_to_dzd_exchange_rate',
             'dzt_asset_code',
             'dzt_asset_issuer',
@@ -359,7 +365,6 @@ class WithdrawalRecordSerializer(serializers.ModelSerializer):
             'receipt_file',
             'receipt_file_url',
             'funding_receipt',
-            'sender_rip',
             'recipient_rip',
             'receipt_amount_dzd',
             'receipt_verified',
@@ -367,7 +372,7 @@ class WithdrawalRecordSerializer(serializers.ModelSerializer):
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['id', 'stage_number', 'next_action', 'receipt_file_url', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'stage_number', 'next_action', 'receipt_file', 'receipt_file_url', 'created_at', 'updated_at']
 
 
 class BaridiMobFundingReceiptSerializer(serializers.ModelSerializer):
@@ -393,7 +398,6 @@ class BaridiMobFundingReceiptSerializer(serializers.ModelSerializer):
             'file_hash',
             'amount_dzd',
             'fee_dzd',
-            'sender_rip',
             'recipient_rip',
             'responsible_person',
             'source_wallet',
@@ -421,11 +425,11 @@ class BaridiMobFundingReceiptSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             'id',
+            'receipt_file',
             'reference',
             'file_hash',
             'amount_dzd',
             'fee_dzd',
-            'sender_rip',
             'recipient_rip',
             'stellar_tx_hash',
             'expense_record',
@@ -459,16 +463,22 @@ class ExpenseRecordSerializer(serializers.ModelSerializer):
 
 class ReceiptUploadSerializer(serializers.Serializer):
     """
-    Multipart upload serializer strictly handling PDF or image file upload.
-    Automatically parses the receipt, checks uniqueness, routes the Stellar transfer,
-    and logs the 50 DZD fee.
+    Accepts either direct receipt data (pure database record) or an uploaded PDF/image 
+    for in-memory parsing. Strictly never forces storing files on disk.
     """
-    receipt_file = serializers.FileField(required=True)
+    receipt_file = serializers.FileField(required=False, allow_null=True)
+    reference = serializers.CharField(required=False, allow_blank=True)
+    amount_dzd = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, allow_null=True)
+    recipient_rip = serializers.CharField(required=False, allow_blank=True)
+    fee_dzd = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, default=Decimal("50.00"))
+    receipt_date = serializers.DateField(required=False, allow_null=True)
     responsible_person = serializers.CharField(required=False, default="P2P Purchasing Officer", allow_blank=True)
     notes = serializers.CharField(required=False, allow_blank=True, default="")
 
     def validate_receipt_file(self, file_obj):
-        name_lower = file_obj.name.lower()
+        if not file_obj:
+            return None
+        name_lower = getattr(file_obj, 'name', '').lower()
         if not (name_lower.endswith('.pdf') or name_lower.endswith(('.png', '.jpg', '.jpeg', '.webp'))):
             raise serializers.ValidationError("File must be a PDF document or a valid image (PNG/JPG).")
         return file_obj
@@ -526,3 +536,80 @@ class BalanceAuditLogSerializer(serializers.ModelSerializer):
             'status',
             'notes',
         ]
+
+
+class BybitAccountSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BybitAccount
+        fields = '__all__'
+
+
+class AiraloAccountSerializer(serializers.ModelSerializer):
+    balance_dzd_equivalent = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = AiraloAccount
+        fields = '__all__'
+
+
+class eSIMFundingRecordSerializer(serializers.ModelSerializer):
+    stage_display = serializers.CharField(source='get_stage_display', read_only=True)
+    source_baridimob_name = serializers.CharField(source='source_baridimob.account_name', read_only=True)
+
+    class Meta:
+        model = eSIMFundingRecord
+        fields = '__all__'
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class eSIMOrderRecordSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = eSIMOrderRecord
+        fields = '__all__'
+
+
+class G2BulkReplenishmentWindowSerializer(serializers.ModelSerializer):
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    supplier_name = serializers.CharField(source='supplier.name', read_only=True)
+    is_active = serializers.BooleanField(source='is_currently_active', read_only=True)
+    remaining_seconds = serializers.IntegerField(read_only=True)
+    elapsed_seconds = serializers.IntegerField(read_only=True)
+    progress_pct = serializers.FloatField(read_only=True)
+
+    class Meta:
+        model = G2BulkReplenishmentWindow
+        fields = [
+            'id',
+            'supplier',
+            'supplier_name',
+            'status',
+            'status_display',
+            'is_active',
+            'started_at',
+            'duration_hours',
+            'expires_at',
+            'completed_at',
+            'initiated_by',
+            'initial_balance_usd',
+            'target_replenish_amount_usd',
+            'final_balance_usd',
+            'final_discrepancy_dzd',
+            'alert_dispatched',
+            'alert_dispatched_at',
+            'suppressed_alerts_count',
+            'notes',
+            'remaining_seconds',
+            'elapsed_seconds',
+            'progress_pct',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = [
+            'id',
+            'started_at',
+            'expires_at',
+            'completed_at',
+            'created_at',
+            'updated_at',
+        ]
+

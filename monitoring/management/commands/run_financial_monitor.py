@@ -58,6 +58,14 @@ class Command(BaseCommand):
                     f"Capital={result['total_capital']:,.2f} DZT | Profits={result['total_profits']:,.2f} DZT"
                 )
 
+                from monitoring.models import G2BulkReplenishmentWindow
+                active_win = G2BulkReplenishmentWindow.get_active_window()
+                if active_win:
+                    rem_sec = active_win.remaining_seconds
+                    self.stdout.write(self.style.WARNING(
+                        f"🛡️ G2Bulk Replenishment Grace Shield Active: Notifications Muted (Expires in {rem_sec // 3600}h {(rem_sec % 3600) // 60}m) | Blocked Alerts: {active_win.suppressed_alerts_count}"
+                    ))
+
             except Exception as e:
                 self.stdout.write(self.style.ERROR(f"Error during audit cycle: {e}"))
                 logger.exception("Error in financial monitor daemon")

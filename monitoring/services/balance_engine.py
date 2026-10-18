@@ -43,6 +43,13 @@ class BalanceEngine:
         """
         sync_reports = {"stellar": [], "g2bulk": None, "epay_profits": None}
 
+        # Auto-evaluate any expired replenishment windows before audit
+        try:
+            from ..models import G2BulkReplenishmentWindow
+            G2BulkReplenishmentWindow.evaluate_and_expire_windows()
+        except Exception as e:
+            logger.error(f"Error evaluating expired G2Bulk windows: {e}")
+
         if sync_live:
             # 1. Sync live Stellar Wallets (DZT)
             sync_reports["stellar"] = StellarService.sync_all_wallets()
@@ -110,9 +117,8 @@ class BalanceEngine:
         from ..models import BinanceAccount
         binance_accounts = BinanceAccount.objects.filter(is_active=True)
         binance_dzd_sum = Decimal("0.00")
-        settings = MonitoringGlobalSettings.get_settings()
         for b_acc in binance_accounts:
-            b_acc.update_dzd_equivalent(settings.usd_to_dzd_exchange_rate)
+            b_acc.update_dzd_equivalent()
             b_acc.save(update_fields=['balance_dzd_equivalent'])
             binance_dzd_sum += b_acc.balance_dzd_equivalent
         binance_dzd_sum = binance_dzd_sum.quantize(Decimal("0.01"))
@@ -215,3 +221,315 @@ class BalanceEngine:
             "audit_id": audit_log.id,
             "notes": "\n".join(notes_parts)
         }
+
+    @classmethod
+    def run_esim_audit(cls, sync_live: bool = True) -> dict:
+        """
+        Executes dedicated audit check for isolated eSIM Subsystem:
+        Assets:
+        - Bybit Accounts (USDT funding / unified converted to DZD)
+        - Airalo Account (Wholesale balance USD converted to DZD)
+        - eSIM Stellar Collection Wallet (DZT)
+        - In-Transit eSIM Refills (Stages 1 to 3)
+        - eSIM Operational Expenses (DZD)
+        Capital & Profits:
+        - eSIM Initial Working Capital (DZD)
+        - eSIM Live Net Profits (DZD)
+        Equation:
+        Left Side = Bybit DZD + Airalo DZD + eSIM Wallets DZT + In-Transit DZD + eSIM Expenses DZD
+        Right Side = eSIM Capital DZD + eSIM Net Profits DZD
+        Discrepancy = Left Side - Right Side
+        """
+        from ..models import (
+            BybitAccount,
+            AiraloAccount,
+            eSIMFundingRecord,
+            eSIMFundingStage,
+            eSIMOrderRecord,
+            SubSystemType,
+            OperationalFamily,
+            WalletFamily,
+            AuditStatus
+        )
+        from .bybit_service import BybitService
+        from .airalo_service import AiraloService
+
+        sync_reports = {"bybit": None, "airalo": None}
+
+        if sync_live:
+            try:
+                sync_reports["bybit"] = BybitService.sync_account()
+            except Exception as e:
+                logger.error(f"Failed to sync Bybit in eSIM audit: {e}")
+
+            try:
+                sync_reports["airalo"] = AiraloService.sync_account()
+            except Exception as e:
+                logger.error(f"Failed to sync Airalo in eSIM audit: {e}")
+
+        # 1. Bybit USDT in DZD
+        bybit_accounts = BybitAccount.objects.filter(is_active=True)
+        bybit_dzd_sum = Decimal("0.00")
+        for b_acc in bybit_accounts:
+            b_acc.update_dzd_equivalent()
+            b_acc.save(update_fields=['balance_dzd_equivalent'])
+            bybit_dzd_sum += b_acc.balance_dzd_equivalent
+
+        # 2. Airalo USD in DZD
+        airalo_accounts = AiraloAccount.objects.filter(is_active=True)
+        airalo_dzd_sum = Decimal("0.00")
+        for a_acc in airalo_accounts:
+            airalo_dzd_sum += a_acc.balance_dzd_equivalent
+
+        # 3. eSIM Stellar Wallets (DZT) - Collection & Profit
+        esim_wallets = StellarWallet.objects.filter(is_active=True, family=WalletFamily.ESIM)
+        esim_wallets_dzt = esim_wallets.aggregate(total=Sum('dzt_balance'))['total'] or Decimal("0.00")
+
+        # 4. In-transit eSIM replenishments (Stages 1 to 3)
+        in_transit_qs = eSIMFundingRecord.objects.filter(
+            stage__in=[
+                eSIMFundingStage.BARIDIMOB_DISPATCHED,
+                eSIMFundingStage.BINANCE_P2P,
+                eSIMFundingStage.BYBIT_FUNDED
+            ]
+        )
+        in_transit_dzd = in_transit_qs.aggregate(total=Sum('amount_dzd'))['total'] or Decimal("0.00")
+
+        # 5. Operational Expenses assigned to eSIM
+        esim_expenses = ExpenseRecord.objects.filter(
+            system_type=OperationalFamily.ESIM
+        ).aggregate(total=Sum('amount_dzd'))['total'] or Decimal("0.00")
+
+        # 6. Available eSIM Cash in Shared BaridiMob Account (Salah)
+        salah_allocation = cls.get_salah_baridimob_allocation()
+        esim_baridi_available = Decimal(str(salah_allocation['esim']['available_balance_dzd']))
+        esim_baridi_expected = Decimal(str(salah_allocation['esim']['expected_balance_dzd']))
+
+        # Left Side Total (Assets + In-Transit + Available BaridiMob + Expenses)
+        left_side = (bybit_dzd_sum + airalo_dzd_sum + esim_wallets_dzt + in_transit_dzd + esim_expenses + esim_baridi_available).quantize(Decimal("0.01"))
+
+        # Right Side: Working Capital + Accrued Net Profits
+        settings = MonitoringGlobalSettings.get_settings()
+        esim_capital = settings.effective_esim_capital
+        if esim_capital <= 0:
+            esim_capital = CapitalEntry.objects.filter(
+                destination_wallet__family=WalletFamily.ESIM
+            ).aggregate(total=Sum('amount_dzd'))['total'] or Decimal("0.00")
+
+        esim_profits = eSIMOrderRecord.objects.filter(
+            status='COMPLETED'
+        ).aggregate(total=Sum('net_profit_dzd'))['total'] or Decimal("0.00")
+
+        right_side = (esim_capital + esim_profits).quantize(Decimal("0.01"))
+
+        discrepancy = (left_side - right_side).quantize(Decimal("0.01"))
+        is_balanced = abs(discrepancy) < Decimal("1.00")
+        status = AuditStatus.BALANCED if is_balanced else AuditStatus.DISCREPANCY_DETECTED
+
+        return {
+            "timestamp": timezone.now(),
+            "status": status,
+            "is_balanced": is_balanced,
+            "discrepancy": discrepancy,
+            "bybit_dzd_total": bybit_dzd_sum,
+            "airalo_dzd_total": airalo_dzd_sum,
+            "esim_wallets_dzt": esim_wallets_dzt,
+            "in_transit_dzd": in_transit_dzd,
+            "esim_expenses": esim_expenses,
+            "esim_baridimob_available": esim_baridi_available,
+            "esim_baridimob_expected": esim_baridi_expected,
+            "left_side_total": left_side,
+            "esim_capital": esim_capital,
+            "esim_profits": esim_profits,
+            "right_side_total": right_side,
+            "sync_reports": sync_reports,
+            "salah_allocation": salah_allocation
+        }
+
+    @classmethod
+    def get_walid_withdrawal_quotas(cls) -> dict:
+        """
+        Dynamically computes the operational quotas based on the withdrawals
+        created and dispatched by Walid (Withdrawal Operations Officer).
+        The quotas are NOT fixed ratios, but reflect live withdrawal demand:
+        - Gaming Quota: Amount withdrawn/targeted by Walid for Gaming (e.g. 10,000 DZD)
+        - eSIM Quota: Amount withdrawn/targeted by Walid for eSIM (e.g. 2,000 DZD)
+        - Factures Quota: Amount withdrawn/targeted by Walid for Factures (e.g. 50,000 DZD)
+        """
+        from ..models import (
+            WithdrawalRecord,
+            WithdrawalStage,
+            SubSystemType,
+            eSIMFundingRecord,
+            eSIMFundingStage,
+        )
+
+        # 1. Gaming withdrawal demand (Walid's active or designated withdrawals)
+        active_gaming = WithdrawalRecord.objects.filter(
+            system_type=SubSystemType.GAMING,
+            stage__in=[WithdrawalStage.ALLOCATED, WithdrawalStage.BINANCE_P2P]
+        ).aggregate(t=Sum('amount_dzd'))['t'] or Decimal('0.00')
+
+        if active_gaming > Decimal('0.00'):
+            gaming_target = active_gaming
+        else:
+            latest_g = WithdrawalRecord.objects.filter(system_type=SubSystemType.GAMING).order_by('-withdrawal_date', '-created_at').first()
+            gaming_target = latest_g.amount_dzd if latest_g else Decimal('10000.00')
+
+        # 2. eSIM withdrawal demand (Walid's active or designated withdrawals)
+        active_esim_w = WithdrawalRecord.objects.filter(
+            system_type=SubSystemType.ESIM,
+            stage__in=[WithdrawalStage.ALLOCATED, WithdrawalStage.BINANCE_P2P]
+        ).aggregate(t=Sum('amount_dzd'))['t'] or Decimal('0.00')
+        active_esim_f = eSIMFundingRecord.objects.filter(
+            stage__in=[eSIMFundingStage.BARIDIMOB_DISPATCHED, eSIMFundingStage.BINANCE_P2P, eSIMFundingStage.BYBIT_FUNDED]
+        ).aggregate(t=Sum('amount_dzd'))['t'] or Decimal('0.00')
+
+        active_esim = active_esim_w + active_esim_f
+        if active_esim > Decimal('0.00'):
+            esim_target = active_esim
+        else:
+            esim_target = Decimal('2000.00')
+
+        # 3. Factures / Utility withdrawal demand
+        active_factures = WithdrawalRecord.objects.filter(
+            system_type=SubSystemType.UTILITY,
+            stage__in=[WithdrawalStage.ALLOCATED, WithdrawalStage.BINANCE_P2P]
+        ).aggregate(t=Sum('amount_dzd'))['t'] or Decimal('0.00')
+        if active_factures > Decimal('0.00'):
+            factures_target = active_factures
+        else:
+            factures_target = Decimal('50000.00')
+
+        return {
+            'gaming_target_quota': gaming_target.quantize(Decimal('0.01')),
+            'esim_target_quota': esim_target.quantize(Decimal('0.01')),
+            'factures_target_quota': factures_target.quantize(Decimal('0.01')),
+        }
+
+    @classmethod
+    def get_salah_baridimob_allocation(cls) -> dict:
+        """
+        Computes mathematical breakdown of Salah's shared BaridiMob account
+        (RIP: 00799999001738866535) between Gaming and eSIM subsystems:
+        1. Operational withdrawal quota for Gaming (Walid)
+        2. Operational withdrawal quota for eSIM (Walid)
+        3. Real live postal card balance
+        4. Real available balance allocated to Gaming vs eSIM
+        5. Total reconciliation variance
+        """
+        from ..models import (
+            BaridiMobAccount,
+            StellarWallet,
+            MonitoringGlobalSettings,
+            SupplierAccount,
+            BinanceAccount,
+            BybitAccount,
+            AiraloAccount,
+            BaridiMobFundingReceipt,
+            FundingCycleStatus,
+            WithdrawalRecord,
+            WithdrawalStage,
+            GameProfitRecord,
+            GamingExpenseRecord,
+            ExpenseRecord,
+            eSIMFundingRecord,
+            eSIMFundingStage,
+            eSIMOrderRecord,
+            WalletFamily,
+            OperationalFamily
+        )
+        settings = MonitoringGlobalSettings.get_settings()
+
+        # 1. Operational Quotas derived from Walid's withdrawals
+        quotas = cls.get_walid_withdrawal_quotas()
+        expected_gaming = quotas['gaming_target_quota']
+        expected_esim = quotas['esim_target_quota']
+
+        gaming_cap = settings.effective_gaming_capital
+        db_game_profit = GameProfitRecord.objects.aggregate(t=Sum('net_profit_dzd'))['t'] or Decimal('0.00')
+        g_profit = settings.total_live_profits_dzd if settings.total_live_profits_dzd > 0 else (db_game_profit if db_game_profit > 0 else Decimal('0.00'))
+
+        g2bulk_dzd = sum(s.balance_dzd_equivalent for s in SupplierAccount.objects.filter(is_active=True))
+        binance_dzd = sum(b.balance_dzd_equivalent for b in BinanceAccount.objects.filter(is_active=True))
+        g_wallets_dzt = StellarWallet.objects.filter(family=WalletFamily.GAME, is_active=True).aggregate(t=Sum('dzt_balance'))['t'] or Decimal('0.00')
+        g_expenses = GamingExpenseRecord.objects.aggregate(t=Sum('amount_dzd'))['t'] or Decimal('0.00')
+
+        pending_rc = BaridiMobFundingReceipt.objects.filter(status__in=[FundingCycleStatus.PENDING_P2P, FundingCycleStatus.P2P_COMPLETED])
+        rc_ids = set(pending_rc.values_list('id', flat=True))
+        in_transit_dzd = (pending_rc.aggregate(t=Sum('amount_dzd'))['t'] or Decimal('0.00')) + (
+            WithdrawalRecord.objects.filter(stage__in=[WithdrawalStage.ALLOCATED, WithdrawalStage.BINANCE_P2P]).exclude(funding_receipt_id__in=rc_ids).aggregate(t=Sum('amount_dzd'))['t'] or Decimal('0.00')
+        )
+        gaming_external = (g2bulk_dzd + binance_dzd + g_wallets_dzt + in_transit_dzd + g_expenses).quantize(Decimal('0.01'))
+
+        # eSIM external assets
+        esim_cap = settings.effective_esim_capital
+        esim_profit = (eSIMOrderRecord.objects.filter(status='COMPLETED').aggregate(t=Sum('net_profit_dzd'))['t'] or Decimal('0.00')).quantize(Decimal('0.01'))
+
+        bybit_dzd = sum(b.balance_dzd_equivalent for b in BybitAccount.objects.filter(is_active=True))
+        airalo_dzd = sum(a.balance_dzd_equivalent for a in AiraloAccount.objects.filter(is_active=True))
+        esim_wallets_dzt = StellarWallet.objects.filter(family=WalletFamily.ESIM, is_active=True).aggregate(t=Sum('dzt_balance'))['t'] or Decimal('0.00')
+        esim_expenses = ExpenseRecord.objects.filter(system_type=OperationalFamily.ESIM).aggregate(t=Sum('amount_dzd'))['t'] or Decimal('0.00')
+        esim_in_transit = eSIMFundingRecord.objects.filter(stage__in=[
+            eSIMFundingStage.BARIDIMOB_DISPATCHED, eSIMFundingStage.BINANCE_P2P, eSIMFundingStage.BYBIT_FUNDED
+        ]).aggregate(t=Sum('amount_dzd'))['t'] or Decimal('0.00')
+        esim_external = (bybit_dzd + airalo_dzd + esim_wallets_dzt + esim_in_transit + esim_expenses).quantize(Decimal('0.01'))
+
+        # Real postal account details (Using official ECCP Extrait de Compte solde)
+        salah_acc = BaridiMobAccount.objects.filter(
+            models.Q(rip_number__icontains='00799999001738866535') | models.Q(account_name__icontains='salah')
+        ).first()
+        eccp_solde = salah_acc.eccp_balance_dzd if (salah_acc and salah_acc.eccp_balance_dzd and salah_acc.eccp_balance_dzd > Decimal('0.00')) else Decimal('0.00')
+        real_balance = eccp_solde
+
+        expected_total = (expected_gaming + expected_esim).quantize(Decimal('0.01'))
+        variance = (real_balance - expected_total).quantize(Decimal('0.01'))
+
+        # Allocation based on Walid's withdrawal requirements:
+        # If real_balance covers both quotas, each gets 100% of its Walid withdrawal requirement
+        if real_balance >= expected_total:
+            available_gaming = expected_gaming
+            available_esim = expected_esim
+            surplus = real_balance - expected_total
+            shortfall = Decimal('0.00')
+        elif expected_total > Decimal('0.00'):
+            ratio_g = expected_gaming / expected_total
+            available_gaming = (real_balance * ratio_g).quantize(Decimal('0.01'))
+            available_esim = (real_balance - available_gaming).quantize(Decimal('0.01'))
+            surplus = Decimal('0.00')
+            shortfall = (expected_total - real_balance).quantize(Decimal('0.01'))
+        else:
+            available_gaming = real_balance
+            available_esim = Decimal('0.00')
+            surplus = real_balance
+            shortfall = Decimal('0.00')
+
+        return {
+            'account_id': salah_acc.id if salah_acc else None,
+            'account_name': salah_acc.account_name if salah_acc else "Salah Shared Account",
+            'rip_number': salah_acc.rip_number if salah_acc else "00799999001738866535",
+            'account_email': salah_acc.account_email if salah_acc else "salahsofi",
+            'real_balance_dzd': float(real_balance),
+            'expected_total_dzd': float(expected_total),
+            'variance_dzd': float(variance),
+            'is_balanced': abs(variance) <= Decimal('1.00'),
+            'surplus_dzd': float(surplus),
+            'shortfall_dzd': float(shortfall),
+            'gaming': {
+                'expected_balance_dzd': float(expected_gaming),
+                'available_balance_dzd': float(available_gaming),
+                'capital_dzd': float(gaming_cap),
+                'profit_dzd': float(g_profit),
+                'external_assets_dzd': float(gaming_external),
+                'shortfall_dzd': float(max(Decimal('0.00'), expected_gaming - available_gaming)),
+            },
+            'esim': {
+                'expected_balance_dzd': float(expected_esim),
+                'available_balance_dzd': float(available_esim),
+                'capital_dzd': float(esim_cap),
+                'profit_dzd': float(esim_profit),
+                'external_assets_dzd': float(esim_external),
+                'shortfall_dzd': float(max(Decimal('0.00'), expected_esim - available_esim)),
+            }
+        }
+

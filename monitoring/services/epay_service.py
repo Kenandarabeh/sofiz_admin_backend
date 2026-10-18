@@ -49,6 +49,7 @@ class EpaySyncService:
         Calls the SINGLE UNIFIED API in Epay:
         GET /api/operations/financial/summary/?product=...&from_date=...&to_date=...
         """
+
         api_url, keys_to_try = cls.get_auth_headers()
         endpoints_to_try = [
             f"{api_url}/financial/summary/",
@@ -65,7 +66,11 @@ class EpaySyncService:
             params['to_date'] = str(to_date).strip()
 
         last_error = None
+        host_unreachable = False
+
         for endpoint in endpoints_to_try:
+            if host_unreachable:
+                break
             for key in keys_to_try:
                 headers = {
                     "Content-Type": "application/json",
@@ -73,7 +78,7 @@ class EpaySyncService:
                     "X-API-KEY": key
                 }
                 try:
-                    with httpx.Client(timeout=15.0) as client:
+                    with httpx.Client(timeout=3.0) as client:
                         res = client.get(endpoint, headers=headers, params=params)
                         if res.status_code == 200:
                             data = res.json()
@@ -83,12 +88,12 @@ class EpaySyncService:
                             total_orders = int(data.get("total_orders", 0))
 
                             if not product or product == 'all':
-                                global_settings = MonitoringGlobalSettings.get_settings()
-                                global_settings.usd_to_dzd_exchange_rate = dollar_rate
-                                global_settings.total_live_profits_dzd = total_profit
-                                global_settings.total_live_sales_dzd = total_sales
-                                global_settings.total_live_orders_count = total_orders
-                                global_settings.save(update_fields=[
+                                m_settings = MonitoringGlobalSettings.get_settings()
+                                m_settings.usd_to_dzd_exchange_rate = dollar_rate
+                                m_settings.total_live_profits_dzd = total_profit
+                                m_settings.total_live_sales_dzd = total_sales
+                                m_settings.total_live_orders_count = total_orders
+                                m_settings.save(update_fields=[
                                     'usd_to_dzd_exchange_rate',
                                     'total_live_profits_dzd',
                                     'total_live_sales_dzd',
@@ -98,6 +103,7 @@ class EpaySyncService:
                             logger.info(f"Unified sync completed from {endpoint} | Rate: {dollar_rate} | Profit: {total_profit}")
                             return {
                                 "success": True,
+                                "is_simulation": False,
                                 "endpoint": endpoint,
                                 "dollar_rate": dollar_rate,
                                 "total_profit_dzd": total_profit,
@@ -114,11 +120,28 @@ class EpaySyncService:
                             break
                         else:
                             last_error = f"HTTP {res.status_code} on {endpoint}: {res.text}"
+                except (httpx.ConnectError, httpx.ConnectTimeout, httpx.TimeoutException) as e:
+                    last_error = f"Host unreachable or timed out: {e}"
+                    host_unreachable = True
+                    break
                 except Exception as e:
                     last_error = str(e)
 
-        logger.error(f"Failed unified financial sync from Epay: {last_error}")
-        return {"success": False, "error": last_error}
+        logger.error(f"Unified financial sync from Epay failed in REAL mode: {last_error}")
+        fallback_settings = MonitoringGlobalSettings.get_settings()
+        return {
+            "success": False,
+            "is_simulation": False,
+            "error": last_error,
+            "dollar_rate": fallback_settings.usd_to_dzd_exchange_rate,
+            "total_profit_dzd": fallback_settings.total_live_profits_dzd,
+            "total_sales_dzd": fallback_settings.total_live_sales_dzd,
+            "total_cost_dzd": Decimal("0.00"),
+            "total_orders": fallback_settings.total_live_orders_count,
+            "filter_product": product or "ALL",
+            "breakdown": []
+        }
+
 
     @classmethod
     def sync_utility_bills(cls, limit: int = 100, service: str = None) -> dict:

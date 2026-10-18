@@ -68,7 +68,7 @@ class G2BulkService:
         last_err = None
         for url in urls_to_try:
             try:
-                with httpx.Client(timeout=15.0) as client:
+                with httpx.Client(timeout=10.0) as client:
                     response = client.get(url, headers=headers)
                     if response.status_code == 401:
                         raise G2BulkAuthError(f"Authentication failed: {response.text}")
@@ -99,21 +99,19 @@ class G2BulkService:
             except Exception as e:
                 last_err = str(e)
 
-        raise G2BulkError(f"Failed to query G2Bulk account info: {last_err}")
+        raise G2BulkError(f"G2Bulk API unreachable ({last_err})")
 
     @classmethod
     def sync_supplier(cls, supplier: SupplierAccount = None) -> dict:
-        """Sync live balance for G2Bulk supplier account in DB"""
+        """Sync live balance for G2Bulk supplier account in DB from official G2Bulk API"""
         if supplier is None:
             supplier, _ = SupplierAccount.objects.get_or_create(
                 provider='G2BULK',
                 defaults={'name': 'G2Bulk Official Account'}
             )
-
         try:
             api_key = cls.get_api_key(supplier)
             res = cls.get_me(api_key=api_key)
-            
             supplier.balance_usd = res["balance_usd"]
             if res.get("user_id"):
                 supplier.account_uid = res["user_id"]
@@ -127,6 +125,7 @@ class G2BulkService:
 
             return {
                 "success": True,
+                "is_simulation": False,
                 "supplier": supplier,
                 "balance_usd": supplier.balance_usd,
                 "balance_dzd": supplier.balance_dzd_equivalent,
@@ -138,7 +137,8 @@ class G2BulkService:
             error_msg = str(e)
             logger.error(f"Failed to sync G2Bulk supplier: {error_msg}")
             supplier.last_error = error_msg
-            supplier.save(update_fields=['last_error'])
+            supplier.last_synced_at = timezone.now()
+            supplier.save(update_fields=['last_error', 'last_synced_at'])
             return {
                 "success": False,
                 "supplier": supplier,

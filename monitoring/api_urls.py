@@ -20,10 +20,24 @@ from .api_views import (
     WithdrawalRecordViewSet,
     BalanceAuditLogViewSet,
     GlobalSettingsAPIView,
+    MasterDataModeToggleAPIView,
     GamingMonitoringAPIView,
     UtilityMonitoringAPIView,
+    SihaamUtilityAccountSyncAPIView,
     SalahGamingAccountAPIView,
     SalahGamingAccountSyncAPIView,
+    eSIMMonitoringAPIView,
+    eSIMSyncBybitAPIView,
+    eSIMSyncAiraloAPIView,
+    BybitAccountViewSet,
+    AiraloAccountViewSet,
+    eSIMFundingRecordViewSet,
+    eSIMOrderRecordViewSet,
+    ECCPBalanceSyncAPIView,
+    MasterLiquiditySummaryAPIView,
+    UnifiedAccountsMonitoringAPIView,
+    G2BulkReplenishmentWindowViewSet,
+    DailyOperationsProfitsAPIView,
 )
 from .auth_views import (
     LoginAPIView,
@@ -47,6 +61,11 @@ router.register(r'utility-bills', UtilityBillRecordViewSet, basename='utility-bi
 router.register(r'capital-entries', CapitalEntryViewSet, basename='capital-entries')
 router.register(r'withdrawals', WithdrawalRecordViewSet, basename='withdrawals')
 router.register(r'audit-logs', BalanceAuditLogViewSet, basename='audit-logs')
+router.register(r'bybit-accounts', BybitAccountViewSet, basename='bybit-accounts')
+router.register(r'airalo-accounts', AiraloAccountViewSet, basename='airalo-accounts')
+router.register(r'esim-fundings', eSIMFundingRecordViewSet, basename='esim-fundings')
+router.register(r'esim-orders', eSIMOrderRecordViewSet, basename='esim-orders')
+router.register(r'g2bulk-replenishment-windows', G2BulkReplenishmentWindowViewSet, basename='g2bulk-replenishment-windows')
 
 urlpatterns = [
     # Institutional Authentication & Profile Suite
@@ -63,12 +82,24 @@ urlpatterns = [
     path('monitoring/gaming/salah-account/', SalahGamingAccountAPIView.as_view(), name='api-salah-gaming-account'),
     path('monitoring/gaming/salah-account/sync/', SalahGamingAccountSyncAPIView.as_view(), name='api-salah-gaming-account-sync'),
     path('monitoring/utility/', UtilityMonitoringAPIView.as_view(), name='api-utility-monitoring'),
+    path('monitoring/utility/sihaam-account/sync/', SihaamUtilityAccountSyncAPIView.as_view(), name='api-sihaam-utility-account-sync'),
+    path('monitoring/eccp/sync/', ECCPBalanceSyncAPIView.as_view(), name='api-eccp-sync'),
+    path('monitoring/master-liquidity-summary/', MasterLiquiditySummaryAPIView.as_view(), name='api-master-liquidity-summary'),
+    path('monitoring/unified-accounts/', UnifiedAccountsMonitoringAPIView.as_view(), name='api-unified-accounts-monitoring'),
+    path('monitoring/daily-operations-profits/', DailyOperationsProfitsAPIView.as_view(), name='api-daily-operations-profits'),
+
+    # Dedicated eSIM Monitoring & Live Sync
+    path('monitoring/esim/', eSIMMonitoringAPIView.as_view(), name='api-esim-monitoring'),
+    path('monitoring/esim/sync-bybit/', eSIMSyncBybitAPIView.as_view(), name='api-esim-sync-bybit'),
+    path('monitoring/esim/sync-airalo/', eSIMSyncAiraloAPIView.as_view(), name='api-esim-sync-airalo'),
 
     # Binance Live Integration
     path('binance/<str:action_name>/', BinanceLiveAPIView.as_view(), name='api-binance-live'),
 
-    # Global Settings
+    # Global Settings & Master Data Source Mode (REAL vs MOCK)
     path('settings/', GlobalSettingsAPIView.as_view(), name='api-settings'),
+    path('monitoring/data-mode/', MasterDataModeToggleAPIView.as_view(), name='api-data-mode'),
+    path('monitoring/toggle-data-mode/', MasterDataModeToggleAPIView.as_view(), name='api-toggle-data-mode'),
 
     # Router endpoints
     path('', include(router.urls)),

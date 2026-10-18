@@ -269,7 +269,6 @@ package "4. Capital Flows (Inflow & Outflow)" as PkgCapital #161B22 {
     + file_hash : CharField(64) [SHA-256, nullable]
     + receipt_file : FileField [receipts/]
     # funding_receipt_id : FK -> BaridiMobFundingReceipt [nullable]
-    + sender_rip : CharField(50) [nullable]
     + recipient_rip : CharField(50) [nullable]
     + receipt_amount_dzd : DecimalField(18,2) [nullable]
     + receipt_verified : BooleanField [default=False]
@@ -298,7 +297,6 @@ package "5. Automated Funding Pipeline" as PkgReceipt #161B22 {
     + file_hash : CharField(64) [SHA-256, unique, nullable, indexed]
     + amount_dzd : DecimalField(18,2) [nullable, parsed via OCR]
     + fee_dzd : DecimalField(10,2) [default=50.00]
-    + sender_rip : CharField(50) [nullable]
     + recipient_rip : CharField(50) [nullable]
     + responsible_person : CharField(100)
     # source_wallet_id : FK -> StellarWallet [nullable]
