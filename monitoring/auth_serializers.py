@@ -106,8 +106,10 @@ class UserDetailSerializer(serializers.ModelSerializer):
         roles = [group.name for group in obj.groups.all()]
         if obj.is_superuser:
             roles.append("SUPER_ADMIN")
+            roles.append("ADMIN")
         elif obj.is_staff:
             roles.append("STAFF_ADMIN")
+            roles.append("ADMIN")
         return list(set(roles))
 
     def get_permissions(self, obj) -> list:
