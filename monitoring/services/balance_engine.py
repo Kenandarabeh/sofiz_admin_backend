@@ -364,19 +364,13 @@ class BalanceEngine:
             eSIMFundingStage,
         )
 
-        # 1. Gaming withdrawal demand (Walid's active or designated withdrawals)
+        # 1. Gaming withdrawal demand from Walid's active receipts
         active_gaming = WithdrawalRecord.objects.filter(
             system_type=SubSystemType.GAMING,
             stage__in=[WithdrawalStage.ALLOCATED, WithdrawalStage.BINANCE_P2P]
         ).aggregate(t=Sum('amount_dzd'))['t'] or Decimal('0.00')
 
-        if active_gaming > Decimal('0.00'):
-            gaming_target = active_gaming
-        else:
-            latest_g = WithdrawalRecord.objects.filter(system_type=SubSystemType.GAMING).order_by('-withdrawal_date', '-created_at').first()
-            gaming_target = latest_g.amount_dzd if latest_g else Decimal('10000.00')
-
-        # 2. eSIM withdrawal demand (Walid's active or designated withdrawals)
+        # 2. eSIM withdrawal demand from Walid's active receipts / fundings
         active_esim_w = WithdrawalRecord.objects.filter(
             system_type=SubSystemType.ESIM,
             stage__in=[WithdrawalStage.ALLOCATED, WithdrawalStage.BINANCE_P2P]
@@ -384,27 +378,18 @@ class BalanceEngine:
         active_esim_f = eSIMFundingRecord.objects.filter(
             stage__in=[eSIMFundingStage.BARIDIMOB_DISPATCHED, eSIMFundingStage.BINANCE_P2P, eSIMFundingStage.BYBIT_FUNDED]
         ).aggregate(t=Sum('amount_dzd'))['t'] or Decimal('0.00')
-
         active_esim = active_esim_w + active_esim_f
-        if active_esim > Decimal('0.00'):
-            esim_target = active_esim
-        else:
-            esim_target = Decimal('2000.00')
 
-        # 3. Factures / Utility withdrawal demand
+        # 3. Factures / Utility withdrawal demand from Walid's active receipts
         active_factures = WithdrawalRecord.objects.filter(
             system_type=SubSystemType.UTILITY,
             stage__in=[WithdrawalStage.ALLOCATED, WithdrawalStage.BINANCE_P2P]
         ).aggregate(t=Sum('amount_dzd'))['t'] or Decimal('0.00')
-        if active_factures > Decimal('0.00'):
-            factures_target = active_factures
-        else:
-            factures_target = Decimal('50000.00')
 
         return {
-            'gaming_target_quota': gaming_target.quantize(Decimal('0.01')),
-            'esim_target_quota': esim_target.quantize(Decimal('0.01')),
-            'factures_target_quota': factures_target.quantize(Decimal('0.01')),
+            'gaming_target_quota': active_gaming.quantize(Decimal('0.01')),
+            'esim_target_quota': active_esim.quantize(Decimal('0.01')),
+            'factures_target_quota': active_factures.quantize(Decimal('0.01')),
         }
 
     @classmethod
@@ -499,7 +484,7 @@ class BalanceEngine:
             surplus = Decimal('0.00')
             shortfall = (expected_total - real_balance).quantize(Decimal('0.01'))
         else:
-            available_gaming = real_balance
+            available_gaming = Decimal('0.00')
             available_esim = Decimal('0.00')
             surplus = real_balance
             shortfall = Decimal('0.00')
