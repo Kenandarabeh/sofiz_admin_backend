@@ -52,11 +52,13 @@ class LoginSerializer(serializers.Serializer):
             })
 
         # 2. Designated operational officers and Full Operations Administrators may access the frontend
-        allowed_frontend_users = ['sofiane_gaming', 'walid_withdrawal', 'admin_operations']
+        allowed_frontend_users = ['sofiane_gaming', 'walid_withdrawal', 'admin_operations', 'admin']
         profile = getattr(user, 'operator_profile', None)
         is_frontend_admin = (
-            profile and profile.mission_role == OperatorMissionRole.ALL_FAMILIES
-        ) or user.groups.filter(name__in=['Full Multi-Family Administrator', 'Super Administrator']).exists()
+            user.is_superuser
+            or (profile and profile.mission_role == OperatorMissionRole.ALL_FAMILIES)
+            or user.groups.filter(name__in=['Full Multi-Family Administrator', 'Super Administrator']).exists()
+        )
 
         if user.username not in allowed_frontend_users and not is_frontend_admin:
             raise serializers.ValidationError({
