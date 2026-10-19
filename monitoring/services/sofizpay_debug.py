@@ -19,7 +19,12 @@ DEFAULT_ALERT_COOLDOWN_MINUTES = 60
 def send_email(email_address: str, subject: str, message: str, html_message: str = None, attachments: list = None) -> bool:
     """
     Standard email dispatcher matching Epay email_sender architecture.
+    STRICTLY DISABLED: Email alerts are globally turned off per user directive until explicitly instructed.
     """
+    if not getattr(settings, "EMAIL_ALERTS_ENABLED", False):
+        logger.info(f"[SofizPay Email Alerts] Suppressed: Email alerts globally disabled by user directive. Subject: {subject}")
+        return True
+
     from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "eurlsofizpay@gmail.com")
     recipient_list = [email_address] if isinstance(email_address, str) else email_address
 

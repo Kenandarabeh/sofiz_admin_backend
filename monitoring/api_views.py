@@ -4981,6 +4981,470 @@ class DailyOperationsProfitsAPIView(APIView):
         })
 
 
+# ==============================================================================
+# IDOOM (ALGÉRIE TÉLÉCOM) FINANCIAL & OPERATIONS API VIEWS
+# ==============================================================================
+
+class IdoomMonitoringAPIView(APIView):
+    """
+    Dedicated Real-Time Idoom (Algérie Télécom) Financial & Stock Monitoring API View.
+    Designed for Service Operators (Soufiane) and Administrators.
+    100% Read-Only: zero financial execution or mutation actions.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        from .services.epay_service import EpaySyncService
+        from .services.balance_engine import BalanceEngine
+        from .serializers import IdoomBatchRefillSerializer, IdoomRefundRecordSerializer
+        from .models import IdoomBatchRefill, IdoomRefundRecord, StellarWallet, WalletFamily, WalletRole
+
+        status_filter = request.query_params.get('status', 'ALL')
+        limit = int(request.query_params.get('limit', 50))
+
+        # 1. Fetch live metrics from Epay API
+        wallet_res = EpaySyncService.sync_idoom_wallet()
+        stock_res = EpaySyncService.sync_idoom_stock()
+        summary_res = EpaySyncService.sync_idoom_financial_summary()
+        tx_res = EpaySyncService.sync_idoom_transactions(status=status_filter, limit=limit)
+
+        # 2. Dedicated Golden Balance Audit
+        audit = BalanceEngine.run_idoom_audit(sync_live=False)
+
+        # 3. Idoom Stellar Wallets (Collection & Profit)
+        from .services.stellar_service import StellarService
+        collection_wallet = StellarWallet.objects.filter(
+            family=WalletFamily.IDOOM,
+            role=WalletRole.COLLECTION,
+            is_active=True
+        ).first()
+        if collection_wallet:
+            try:
+                StellarService.sync_wallet(collection_wallet)
+            except Exception as e:
+                logger.warning(f"Failed to sync Idoom collection wallet: {e}")
+
+        profit_wallet = StellarWallet.objects.filter(
+            family=WalletFamily.IDOOM,
+            role=WalletRole.PROFIT,
+            is_active=True
+        ).first()
+
+        # 4. Recent Refills & Refunds
+        recent_batches = IdoomBatchRefill.objects.all()[:10]
+        recent_refunds = IdoomRefundRecord.objects.all()[:10]
+
+        return Response({
+            "success": True,
+            "timestamp": timezone.now().isoformat(),
+            "operational_wallet": wallet_res,
+            "stock_inventory": stock_res,
+            "financial_summary": summary_res,
+            "transactions": tx_res.get("transactions", []),
+            "has_in_flight_processing": tx_res.get("has_in_flight_processing", False),
+            "audit": audit,
+            "collection_wallet": {
+                "name": collection_wallet.name if collection_wallet else "Idoom Collection Wallet",
+                "public_address": collection_wallet.public_address if collection_wallet else None,
+                "dzt_balance": float(collection_wallet.dzt_balance) if collection_wallet else 0.0,
+            },
+            "profit_wallet": {
+                "name": profit_wallet.name if profit_wallet else "Idoom Profit Reserve (Virtual)",
+                "public_address": profit_wallet.public_address if profit_wallet else None,
+                "balance_dzd": float(profit_wallet.dzt_balance) if profit_wallet else 0.0,
+            },
+            "recent_batches": IdoomBatchRefillSerializer(recent_batches, many=True).data,
+            "recent_refunds": IdoomRefundRecordSerializer(recent_refunds, many=True).data,
+        }, status=status.HTTP_200_OK)
+
+
+class IdoomWithdrawalsRefillAPIView(APIView):
+    """
+    Dedicated Idoom Card Stock Refill & Dual-Action Withdrawal Hub.
+    Restricted strictly to Treasury Officers (Walid) and Administrators.
+    Capabilities:
+    - Pre-flight check: locks refill if any transaction is ON_PROCESSING.
+    - Upload & parse batch voucher card files (.csv, .xlsx, .txt, .json).
+    - Dual-action execution: Deducts procurement cost to Big Wallet, segregates net profit to Idoom Profit Reserve.
+    """
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        from .services.epay_service import EpaySyncService
+        from .models import (
+            StellarWallet,
+            WalletFamily,
+            WalletRole,
+            IdoomBatchRefill,
+            IdoomRefundRecord,
+        )
+        from .serializers import IdoomBatchRefillSerializer, IdoomRefundRecordSerializer
+
+        # Live in-flight check
+        tx_data = EpaySyncService.sync_idoom_transactions(limit=10)
+        has_in_flight = tx_data.get("has_in_flight_processing", False)
+
+        # Available Treasury Wallets for funding
+        treasury_wallets = StellarWallet.objects.filter(
+            family=WalletFamily.TREASURY,
+            is_active=True
+        ).values('id', 'name', 'public_address', 'dzt_balance')
+
+        idoom_profit_wallet = StellarWallet.objects.filter(
+            family=WalletFamily.IDOOM,
+            role=WalletRole.PROFIT,
+            is_active=True
+        ).first()
+
+        recent_batches = IdoomBatchRefill.objects.all()[:15]
+        recent_refunds = IdoomRefundRecord.objects.all()[:15]
+
+        return Response({
+            "success": True,
+            "can_refill": not has_in_flight,
+            "has_in_flight_processing": has_in_flight,
+            "in_flight_warning": (
+                "⚠️ Active transactions are currently processing in Epay. Refill & withdrawal operations are locked until all in-flight transactions finalize."
+                if has_in_flight else None
+            ),
+            "treasury_wallets": list(treasury_wallets),
+            "profit_wallet": {
+                "name": idoom_profit_wallet.name if idoom_profit_wallet else "Idoom Profit Reserve (Virtual)",
+                "balance_dzd": float(idoom_profit_wallet.dzt_balance) if idoom_profit_wallet else 0.0,
+            },
+            "recent_batches": IdoomBatchRefillSerializer(recent_batches, many=True).data,
+            "recent_refunds": IdoomRefundRecordSerializer(recent_refunds, many=True).data,
+        })
+
+    def post(self, request):
+        action_type = request.data.get('action', 'execute').lower()
+
+        if action_type == 'preview':
+            return self._handle_preview(request)
+        elif action_type == 'execute':
+            return self._handle_execute(request)
+        else:
+            return Response({"success": False, "error": f"Invalid action: {action_type}"}, status=status.HTTP_400_BAD_REQUEST)
+
+    def _parse_uploaded_cards(self, request):
+        """
+        Parses cards from uploaded file or JSON input.
+        Returns tuple: (cards_list, breakdown, total_count, total_face_value, total_cost, total_profit)
+        """
+        uploaded_file = request.FILES.get('batch_file')
+        raw_json_input = request.data.get('cards_data')
+        discount_rate = Decimal(str(request.data.get('discount_pct', '2.00'))) / Decimal("100")
+
+        breakdown = {}
+        total_count = 0
+        total_face_value = Decimal("0.00")
+        total_cost = Decimal("0.00")
+        total_profit = Decimal("0.00")
+        parsed_cards = []
+
+        if uploaded_file:
+            content = uploaded_file.read().decode('utf-8', errors='ignore')
+            lines = [line.strip() for line in content.splitlines() if line.strip()]
+
+            for line in lines:
+                parts = [p.strip() for p in line.replace(';', ',').replace('\t', ',').split(',')]
+                if not parts:
+                    continue
+                try:
+                    denom_val = Decimal(str(parts[0]))
+                except Exception:
+                    continue
+
+                if denom_val <= Decimal("0.00"):
+                    continue
+
+                denom_str = f"{int(denom_val)} DZD"
+                if denom_str not in breakdown:
+                    breakdown[denom_str] = {
+                        "denomination": float(denom_val),
+                        "count": 0,
+                        "face_value": 0.0,
+                        "cost": 0.0,
+                        "profit": 0.0,
+                    }
+
+                count_increment = 1
+                if len(parts) >= 2 and parts[1].isdigit():
+                    count_increment = int(parts[1])
+
+                card_cost = (denom_val * (Decimal("1.00") - discount_rate)).quantize(Decimal("0.01"))
+                card_profit = (denom_val - card_cost).quantize(Decimal("0.01"))
+
+                breakdown[denom_str]["count"] += count_increment
+                breakdown[denom_str]["face_value"] += float(denom_val * count_increment)
+                breakdown[denom_str]["cost"] += float(card_cost * count_increment)
+                breakdown[denom_str]["profit"] += float(card_profit * count_increment)
+
+                total_count += count_increment
+                total_face_value += (denom_val * count_increment)
+                total_cost += (card_cost * count_increment)
+                total_profit += (card_profit * count_increment)
+                parsed_cards.append({"denomination": float(denom_val), "count": count_increment})
+
+        elif raw_json_input:
+            import json
+            if isinstance(raw_json_input, str):
+                try:
+                    raw_json_input = json.loads(raw_json_input)
+                except Exception:
+                    pass
+
+            if isinstance(raw_json_input, dict):
+                for denom_key, cnt in raw_json_input.items():
+                    try:
+                        denom_val = Decimal(str(denom_key))
+                        cnt = int(cnt)
+                    except Exception:
+                        continue
+                    if cnt <= 0:
+                        continue
+
+                    card_cost = (denom_val * (Decimal("1.00") - discount_rate)).quantize(Decimal("0.01"))
+                    card_profit = (denom_val - card_cost).quantize(Decimal("0.01"))
+                    denom_str = f"{int(denom_val)} DZD"
+
+                    breakdown[denom_str] = {
+                        "denomination": float(denom_val),
+                        "count": cnt,
+                        "face_value": float(denom_val * cnt),
+                        "cost": float(card_cost * cnt),
+                        "profit": float(card_profit * cnt),
+                    }
+                    total_count += cnt
+                    total_face_value += (denom_val * cnt)
+                    total_cost += (card_cost * cnt)
+                    total_profit += (card_profit * cnt)
+                    parsed_cards.append({"denomination": float(denom_val), "count": cnt})
+
+            elif isinstance(raw_json_input, list):
+                for item in raw_json_input:
+                    denom_val = Decimal(str(item.get("denomination", 0)))
+                    cnt = int(item.get("count", 1))
+                    if denom_val <= 0 or cnt <= 0:
+                        continue
+
+                    card_cost = Decimal(str(item.get("cost", 0))) or (denom_val * (Decimal("1.00") - discount_rate)).quantize(Decimal("0.01"))
+                    card_profit = (denom_val - card_cost).quantize(Decimal("0.01"))
+                    denom_str = f"{int(denom_val)} DZD"
+
+                    if denom_str not in breakdown:
+                        breakdown[denom_str] = {
+                            "denomination": float(denom_val),
+                            "count": 0,
+                            "face_value": 0.0,
+                            "cost": 0.0,
+                            "profit": 0.0,
+                        }
+                    breakdown[denom_str]["count"] += cnt
+                    breakdown[denom_str]["face_value"] += float(denom_val * cnt)
+                    breakdown[denom_str]["cost"] += float(card_cost * cnt)
+                    breakdown[denom_str]["profit"] += float(card_profit * cnt)
+
+                    total_count += cnt
+                    total_face_value += (denom_val * cnt)
+                    total_cost += (card_cost * cnt)
+                    total_profit += (card_profit * cnt)
+                    parsed_cards.append({"denomination": float(denom_val), "count": cnt})
+
+        return parsed_cards, breakdown, total_count, total_face_value, total_cost, total_profit
+
+    def _handle_preview(self, request):
+        from .services.epay_service import EpaySyncService
+
+        tx_data = EpaySyncService.sync_idoom_transactions(limit=10)
+        has_in_flight = tx_data.get("has_in_flight_processing", False)
+
+        cards, breakdown, total_count, total_face_value, total_cost, total_profit = self._parse_uploaded_cards(request)
+
+        if total_count == 0:
+            return Response({
+                "success": False,
+                "error": "No valid cards or denominations found in input file or data.",
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({
+            "success": True,
+            "preview_mode": True,
+            "can_execute": not has_in_flight,
+            "has_in_flight_processing": has_in_flight,
+            "total_cards_count": total_count,
+            "total_face_value_dzd": float(total_face_value),
+            "total_cost_dzd": float(total_cost),
+            "expected_profit_dzd": float(total_profit),
+            "breakdown": breakdown,
+            "warning": (
+                "⚠️ Execution is LOCKED: Live transactions are currently processing in Epay."
+                if has_in_flight else None
+            ),
+        })
+
+    def _handle_execute(self, request):
+        from .services.epay_service import EpaySyncService
+        from .models import (
+            IdoomBatchRefill,
+            WithdrawalRecord,
+            WithdrawalPurpose,
+            WithdrawalStage,
+            WithdrawalType,
+            SubSystemType,
+            StellarWallet,
+            WalletFamily,
+            WalletRole,
+        )
+        import uuid
+
+        # 1. Strict Pre-flight Safety Guard
+        tx_data = EpaySyncService.sync_idoom_transactions(limit=10)
+        if tx_data.get("has_in_flight_processing", False):
+            return Response({
+                "success": False,
+                "error": "Refill execution strictly blocked: Live transactions are currently ON_PROCESSING in Epay. Please wait until completed.",
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        cards, breakdown, total_count, total_face_value, total_cost, total_profit = self._parse_uploaded_cards(request)
+
+        if total_count == 0:
+            return Response({
+                "success": False,
+                "error": "No valid cards to refill. Please upload a valid batch voucher file.",
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        uploaded_file = request.FILES.get('batch_file')
+        file_name = uploaded_file.name if uploaded_file else "manual_breakdown_refill.json"
+
+        batch_ref = f"IDM-{timezone.now().strftime('%Y%m%d%H%M')}-{uuid.uuid4().hex[:6].upper()}"
+
+        source_wallet_id = request.data.get('source_wallet_id')
+        source_wallet = None
+        if source_wallet_id:
+            source_wallet = StellarWallet.objects.filter(id=source_wallet_id, is_active=True).first()
+        if not source_wallet:
+            source_wallet = StellarWallet.objects.filter(family=WalletFamily.TREASURY, role=WalletRole.VAULT, is_active=True).first()
+
+        # Execute atomic financial transactions
+        with transaction.atomic():
+            withdrawal = WithdrawalRecord.objects.create(
+                title=f"Idoom Voucher Refill Batch #{batch_ref}",
+                reference=batch_ref,
+                amount_dzd=total_cost,
+                system_type=SubSystemType.IDOOM,
+                purpose_code=WithdrawalPurpose.IDOOM_STOCK_REFILL,
+                withdrawal_type=WithdrawalType.INSTITUTIONAL_INTERNAL,
+                stage=WithdrawalStage.COMPLETED,
+                source_wallet=source_wallet,
+                executed_by=request.user if request.user.is_authenticated else None,
+                notes=f"Procurement of {total_count} Idoom voucher cards. Face Value: {total_face_value:,.2f} DZD. Cost: {total_cost:,.2f} DZD. Profit: {total_profit:,.2f} DZD.",
+            )
+
+            # Segregate Net Profit to Idoom Profit Reserve Wallet
+            profit_wallet = StellarWallet.objects.filter(
+                family=WalletFamily.IDOOM,
+                role=WalletRole.PROFIT,
+                is_active=True
+            ).first()
+
+            if profit_wallet and total_profit > 0:
+                profit_wallet.dzt_balance = (profit_wallet.dzt_balance + total_profit).quantize(Decimal("0.0000001"))
+                profit_wallet.save(update_fields=['dzt_balance'])
+
+            batch_record = IdoomBatchRefill.objects.create(
+                batch_reference=batch_ref,
+                total_cards_count=total_count,
+                total_face_value_dzd=total_face_value,
+                total_cost_dzd=total_cost,
+                expected_profit_dzd=total_profit,
+                breakdown_json=breakdown,
+                uploaded_file_name=file_name,
+                executed_by=request.user if request.user.is_authenticated else None,
+                withdrawal_record=withdrawal,
+            )
+
+        return Response({
+            "success": True,
+            "message": f"Successfully processed Idoom refill batch #{batch_ref} with {total_count} cards.",
+            "batch_reference": batch_ref,
+            "total_cards_count": total_count,
+            "total_face_value_dzd": float(total_face_value),
+            "total_cost_dzd": float(total_cost),
+            "expected_profit_dzd": float(total_profit),
+            "breakdown": breakdown,
+            "withdrawal_record_id": withdrawal.id,
+        }, status=status.HTTP_201_CREATED)
+
+
+class IdoomRefundRollbackAPIView(APIView):
+    """
+    Dedicated Idoom Card Failure & Reversal Refund API View.
+    Handles rollback of phantom profit from Idoom Profit Reserve and triggers refund in Epay.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        from .services.epay_service import EpaySyncService
+        from .models import (
+            IdoomRefundRecord,
+            StellarWallet,
+            WalletFamily,
+            WalletRole,
+        )
+        import uuid
+
+        epay_tx_id = request.data.get('epay_transaction_id')
+        denomination_val = Decimal(str(request.data.get('denomination_dzd', '0.00')))
+        reversed_profit_val = Decimal(str(request.data.get('reversed_profit_dzd', '0.00')))
+        client_phone = request.data.get('client_phone_or_account', '')
+        reason = request.data.get('reason', 'FAILED_DEFECTIVE_CARD')
+
+        if not epay_tx_id:
+            return Response({"success": False, "error": "Missing epay_transaction_id."}, status=status.HTTP_400_BAD_REQUEST)
+
+        refund_ref = f"REF-{timezone.now().strftime('%Y%m%d%H%M')}-{uuid.uuid4().hex[:6].upper()}"
+
+        with transaction.atomic():
+            profit_wallet = StellarWallet.objects.filter(
+                family=WalletFamily.IDOOM,
+                role=WalletRole.PROFIT,
+                is_active=True
+            ).first()
+
+            if profit_wallet and reversed_profit_val > Decimal("0.00"):
+                new_bal = max(Decimal("0.00"), profit_wallet.dzt_balance - reversed_profit_val)
+                profit_wallet.dzt_balance = new_bal.quantize(Decimal("0.0000001"))
+                profit_wallet.save(update_fields=['dzt_balance'])
+
+            record = IdoomRefundRecord.objects.create(
+                refund_reference=refund_ref,
+                epay_transaction_id=str(epay_tx_id),
+                client_phone_or_account=client_phone,
+                denomination_dzd=denomination_val,
+                reversed_profit_dzd=reversed_profit_val,
+                reason=reason,
+                executed_by=request.user if request.user.is_authenticated else None,
+            )
+
+        epay_res = EpaySyncService.post_idoom_refund(
+            transaction_id=str(epay_tx_id),
+            reason=reason,
+            refund_amount_dzd=float(denomination_val)
+        )
+
+        return Response({
+            "success": True,
+            "message": f"Refund #{refund_ref} recorded successfully. Reversal executed.",
+            "refund_reference": refund_ref,
+            "epay_transaction_id": epay_tx_id,
+            "reversed_profit_dzd": float(reversed_profit_val),
+            "epay_response": epay_res,
+        }, status=status.HTTP_201_CREATED)
+
+
+
 
 
 

@@ -25,6 +25,8 @@ from .models import (
     eSIMFundingRecord,
     eSIMOrderRecord,
     G2BulkReplenishmentWindow,
+    IdoomBatchRefill,
+    IdoomRefundRecord,
 )
 from .services.receipt_parser_service import ReceiptParserService
 from .services.stellar_sweep_service import StellarSweepService
@@ -612,4 +614,48 @@ class G2BulkReplenishmentWindowSerializer(serializers.ModelSerializer):
             'created_at',
             'updated_at',
         ]
+
+
+class IdoomBatchRefillSerializer(serializers.ModelSerializer):
+    executed_by_username = serializers.CharField(source='executed_by.username', read_only=True)
+    withdrawal_reference = serializers.CharField(source='withdrawal_record.reference', read_only=True)
+
+    class Meta:
+        model = IdoomBatchRefill
+        fields = [
+            'id',
+            'batch_reference',
+            'total_cards_count',
+            'total_face_value_dzd',
+            'total_cost_dzd',
+            'expected_profit_dzd',
+            'breakdown_json',
+            'uploaded_file_name',
+            'executed_by',
+            'executed_by_username',
+            'withdrawal_record',
+            'withdrawal_reference',
+            'created_at',
+        ]
+        read_only_fields = ['id', 'created_at']
+
+
+class IdoomRefundRecordSerializer(serializers.ModelSerializer):
+    executed_by_username = serializers.CharField(source='executed_by.username', read_only=True)
+
+    class Meta:
+        model = IdoomRefundRecord
+        fields = [
+            'id',
+            'refund_reference',
+            'epay_transaction_id',
+            'client_phone_or_account',
+            'denomination_dzd',
+            'reversed_profit_dzd',
+            'reason',
+            'executed_by',
+            'executed_by_username',
+            'created_at',
+        ]
+        read_only_fields = ['id', 'created_at']
 

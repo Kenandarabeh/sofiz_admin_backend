@@ -2,6 +2,7 @@ import os
 from decimal import Decimal
 from django.db import models
 from django.utils import timezone
+from django.conf import settings
 from django.contrib.auth.models import User
 from core.encryption import EncryptedCharField, EncryptedTextField
 
@@ -22,12 +23,14 @@ class OperationalFamily(models.TextChoices):
     GAME = 'GAME', 'Game Family (Gaming & Top-Ups)'
     FACTURE = 'FACTURE', 'Facture Family (Bills & Utilities)'
     ESIM = 'ESIM', 'eSIM Family (eSIM & Telecom)'
+    IDOOM = 'IDOOM', 'Idoom Family (Algérie Télécom)'
 
 
 class WalletFamily(models.TextChoices):
     GAME = 'GAME', 'Game Family (Gaming & Top-Ups)'
     FACTURE = 'FACTURE', 'Facture Family (Bills & Utilities)'
     ESIM = 'ESIM', 'eSIM Family (eSIM & Telecom)'
+    IDOOM = 'IDOOM', 'Idoom Family (Algérie Télécom)'
     TREASURY = 'TREASURY', 'Treasury Family (Central Vaults)'
 
 
@@ -59,6 +62,7 @@ class SubSystemType(models.TextChoices):
     GAMING = 'GAMING', 'Gaming Working Capital (G2Bulk Supplier)'
     UTILITY = 'UTILITY', 'Utility Bills Working Capital (BaridiMob)'
     ESIM = 'ESIM', 'eSIM & Telecom Working Capital'
+    IDOOM = 'IDOOM', 'Idoom Working Capital & Vouchers'
     TREASURY = 'TREASURY', 'Central Treasury Reserve (Stellar DZT)'
     ALL = 'ALL', 'All Sub-Systems (Universal Authorized)'
 
@@ -92,6 +96,7 @@ class WithdrawalPurpose(models.TextChoices):
     ADE_SETTLEMENT = 'ADE_SETTLEMENT', 'ADE Water Settlement Balance Allocation'
     AT_SETTLEMENT = 'AT_SETTLEMENT', 'Algérie Télécom Settlement Balance Allocation'
     ESIM_REFILL = 'ESIM_REFILL', 'eSIM & Telecom Balance Refill (Airalo / Telecom Partner)'
+    IDOOM_STOCK_REFILL = 'IDOOM_STOCK_REFILL', 'Idoom Vouchers & Inventory Procurement Refill'
     TREASURY_ALLOCATION = 'TREASURY_ALLOCATION', 'Internal Treasury Liquidity Allocation'
     OWNER_DIVIDEND = 'OWNER_DIVIDEND', 'Owner Capital & Profit Dividend'
     OTHER = 'OTHER', 'Other Confined Outflow'
@@ -109,6 +114,7 @@ class WithdrawalPurpose(models.TextChoices):
             cls.ADE_SETTLEMENT: "Batch settlement allocation for water utility bills via Algérienne Des Eaux payment portal.",
             cls.AT_SETTLEMENT: "Batch settlement allocation for Internet ADSL/Fibre and fixed telephone bills via Algérie Télécom portal.",
             cls.ESIM_REFILL: "Replenishing operational funds for Airalo eSIM data packages procurement and international roaming distribution.",
+            cls.IDOOM_STOCK_REFILL: "Procurement replenishment of Idoom ADSL/Fibre/4G LTE vouchers and allocation to Big Wallet with profit segregation.",
             cls.TREASURY_ALLOCATION: "Internal treasury capital transfer to replenish operational gaming vaults and collection pools.",
             cls.OWNER_DIVIDEND: "Audited distribution of verified business profits and dividends to institutional owner bank accounts.",
             cls.OTHER: "Documented institutional fund outflow with verified audit rationale.",
@@ -2299,3 +2305,55 @@ class AccountBalanceSnapshot(models.Model):
 
     def __str__(self):
         return f"[{self.get_channel_display()}] {self.recorded_at.strftime('%Y-%m-%d %H:%M')} | {self.current_balance_dzd:,.2f} DZD (Change: {self.balance_change_dzd:+,.2f} DZD)"
+
+
+# ==============================================================================
+# 11. IDOOM BATCH REFILL & REFUND MODELS
+# ==============================================================================
+
+class IdoomBatchRefill(models.Model):
+    """
+    Audited record for Idoom card stock replenishment batches uploaded by Treasury Officer (Walid).
+    Calculates total procurement cost, face value, and segregated profit.
+    """
+    batch_reference = models.CharField(max_length=64, unique=True, db_index=True, verbose_name="Batch Reference")
+    total_cards_count = models.PositiveIntegerField(default=0, verbose_name="Total Cards Count")
+    total_face_value_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Total Face Value (DZD)")
+    total_cost_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Procurement Cost (DZD)")
+    expected_profit_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Expected Profit (DZD)")
+    breakdown_json = models.JSONField(default=dict, blank=True, verbose_name="Denominations Breakdown")
+    uploaded_file_name = models.CharField(max_length=255, blank=True, null=True, verbose_name="Uploaded File Name")
+    executed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, verbose_name="Executed By")
+    withdrawal_record = models.ForeignKey('WithdrawalRecord', on_delete=models.SET_NULL, null=True, blank=True, verbose_name="Linked Withdrawal Outflow")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True, verbose_name="Batch Creation Timestamp")
+
+    class Meta:
+        verbose_name = "Idoom Batch Refill Record"
+        verbose_name_plural = "Idoom Batch Refill Records"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"[Idoom Refill #{self.batch_reference}] {self.total_cards_count} cards | Cost: {self.total_cost_dzd:,.2f} DZD | Profit: {self.expected_profit_dzd:,.2f} DZD"
+
+
+class IdoomRefundRecord(models.Model):
+    """
+    Audited record for defective/failed Idoom voucher cards.
+    Handles reversal refund to client and rollbacks phantom profit from profit reserve.
+    """
+    refund_reference = models.CharField(max_length=64, unique=True, db_index=True, verbose_name="Refund Reference")
+    epay_transaction_id = models.CharField(max_length=100, db_index=True, verbose_name="Epay Transaction ID")
+    client_phone_or_account = models.CharField(max_length=64, blank=True, verbose_name="Customer Account / Phone")
+    denomination_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Refunded Amount (DZD)")
+    reversed_profit_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Reversed Profit (DZD)")
+    reason = models.CharField(max_length=255, default="FAILED_DEFECTIVE_CARD", verbose_name="Refund Rationale")
+    executed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, verbose_name="Executed By")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True, verbose_name="Refund Timestamp")
+
+    class Meta:
+        verbose_name = "Idoom Defective Card Refund"
+        verbose_name_plural = "Idoom Defective Card Refunds"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"[Idoom Refund #{self.refund_reference}] TID: {self.epay_transaction_id} | Amount: {self.denomination_dzd:,.2f} DZD"

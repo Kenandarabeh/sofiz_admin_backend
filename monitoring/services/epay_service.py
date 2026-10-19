@@ -264,3 +264,151 @@ class EpaySyncService:
     @classmethod
     def sync_game_profits_from_epay(cls, limit: int = 100) -> dict:
         return cls.sync_financial_summary()
+
+    # =========================================================================
+    # IDOOM INTEGRATION METHODS
+    # =========================================================================
+    @classmethod
+    def sync_idoom_wallet(cls) -> dict:
+        """
+        GET /api/operations/idoom/wallet/
+        Fetches live dedicated operational wallet balance for Idoom from Epay.
+        """
+        api_url, keys_to_try = cls.get_auth_headers()
+        endpoint = f"{api_url}/idoom/wallet/"
+        last_error = None
+
+        for key in keys_to_try:
+            headers = {"X-API-KEY": key, "Accept": "application/json"}
+            try:
+                with httpx.Client(timeout=10.0) as client:
+                    res = client.get(endpoint, headers=headers)
+                    if res.status_code == 200:
+                        return res.json()
+                    last_error = f"HTTP {res.status_code}: {res.text}"
+            except Exception as e:
+                logger.error(f"Error fetching Idoom wallet from Epay: {e}")
+                last_error = str(e)
+
+        return {"success": False, "error": last_error, "balance_dzd": 0.0}
+
+    @classmethod
+    def sync_idoom_stock(cls) -> dict:
+        """
+        GET /api/operations/idoom/stock/
+        Fetches live voucher card inventory levels grouped by denomination.
+        """
+        api_url, keys_to_try = cls.get_auth_headers()
+        endpoint = f"{api_url}/idoom/stock/"
+        last_error = None
+
+        for key in keys_to_try:
+            headers = {"X-API-KEY": key, "Accept": "application/json"}
+            try:
+                with httpx.Client(timeout=10.0) as client:
+                    res = client.get(endpoint, headers=headers)
+                    if res.status_code == 200:
+                        return res.json()
+                    last_error = f"HTTP {res.status_code}: {res.text}"
+            except Exception as e:
+                logger.error(f"Error fetching Idoom stock from Epay: {e}")
+                last_error = str(e)
+
+        return {"success": False, "error": last_error, "denominations": []}
+
+    @classmethod
+    def sync_idoom_financial_summary(cls, from_date: str = None, to_date: str = None) -> dict:
+        """
+        GET /api/operations/idoom/financial-summary/
+        Fetches live sales, procurement costs, and net profit for Idoom.
+        """
+        api_url, keys_to_try = cls.get_auth_headers()
+        endpoint = f"{api_url}/idoom/financial-summary/"
+        params = {}
+        if from_date:
+            params["from_date"] = from_date
+        if to_date:
+            params["to_date"] = to_date
+        last_error = None
+
+        for key in keys_to_try:
+            headers = {"X-API-KEY": key, "Accept": "application/json"}
+            try:
+                with httpx.Client(timeout=10.0) as client:
+                    res = client.get(endpoint, headers=headers, params=params)
+                    if res.status_code == 200:
+                        return res.json()
+                    last_error = f"HTTP {res.status_code}: {res.text}"
+            except Exception as e:
+                logger.error(f"Error fetching Idoom financial summary from Epay: {e}")
+                last_error = str(e)
+
+        return {
+            "success": False,
+            "error": last_error,
+            "total_sales_dzd": 0.0,
+            "total_cost_dzd": 0.0,
+            "net_profit_dzd": 0.0
+        }
+
+    @classmethod
+    def sync_idoom_transactions(cls, status: str = None, limit: int = 50) -> dict:
+        """
+        GET /api/operations/idoom/transactions/
+        Fetches live transaction records and in-flight operations status.
+        """
+        api_url, keys_to_try = cls.get_auth_headers()
+        endpoint = f"{api_url}/idoom/transactions/"
+        params = {"limit": limit}
+        if status and status != "ALL":
+            params["status"] = status
+        last_error = None
+
+        for key in keys_to_try:
+            headers = {"X-API-KEY": key, "Accept": "application/json"}
+            try:
+                with httpx.Client(timeout=12.0) as client:
+                    res = client.get(endpoint, headers=headers, params=params)
+                    if res.status_code == 200:
+                        return res.json()
+                    last_error = f"HTTP {res.status_code}: {res.text}"
+            except Exception as e:
+                logger.error(f"Error fetching Idoom transactions from Epay: {e}")
+                last_error = str(e)
+
+        return {
+            "success": False,
+            "error": last_error,
+            "has_in_flight_processing": False,
+            "transactions": []
+        }
+
+    @classmethod
+    def post_idoom_refund(cls, transaction_id: str, reason: str = "FAILED_DEFECTIVE_CARD", refund_amount_dzd: float = 0.0) -> dict:
+        """
+        POST /api/operations/idoom/refund/
+        Notifies Epay of a verified refund/reversal.
+        """
+        api_url, keys_to_try = cls.get_auth_headers()
+        endpoint = f"{api_url}/idoom/refund/"
+        payload = {
+            "transaction_id": transaction_id,
+            "reason": reason,
+            "refund_amount_dzd": float(refund_amount_dzd)
+        }
+        last_error = None
+
+        for key in keys_to_try:
+            headers = {"X-API-KEY": key, "Content-Type": "application/json", "Accept": "application/json"}
+            try:
+                with httpx.Client(timeout=10.0) as client:
+                    res = client.post(endpoint, headers=headers, json=payload)
+                    if res.status_code in [200, 201]:
+                        return res.json()
+                    last_error = f"HTTP {res.status_code}: {res.text}"
+            except Exception as e:
+                logger.error(f"Error posting Idoom refund to Epay: {e}")
+                last_error = str(e)
+
+        return {"success": False, "error": last_error}
+

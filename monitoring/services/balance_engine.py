@@ -41,6 +41,10 @@ class BalanceEngine:
         4. Calculates the Golden Balance equation.
         5. Logs the audit record and dispatches email alerts if discrepancy is detected.
         """
+        from django.conf import settings
+        if not getattr(settings, 'EMAIL_ALERTS_ENABLED', False):
+            send_alerts = False
+
         sync_reports = {"stellar": [], "g2bulk": None, "epay_profits": None}
 
         # Auto-evaluate any expired replenishment windows before audit
@@ -344,6 +348,124 @@ class BalanceEngine:
             "right_side_total": right_side,
             "sync_reports": sync_reports,
             "salah_allocation": salah_allocation
+        }
+
+    @classmethod
+    def run_idoom_audit(cls, sync_live: bool = True) -> dict:
+        """
+        Executes dedicated audit check for isolated Idoom (Algérie Télécom) Subsystem:
+        Assets:
+        - Operational Wallet (Epay live cash balance)
+        - Available Cards Inventory Value (from Epay stock breakdown)
+        - Idoom Profit Account (Segregated net profit wallet / account)
+        - Idoom Operational Expenses (DZD)
+        - In-Transit Refills (DZD)
+        Capital & Profits:
+        - Idoom Initial Working Capital (DZD)
+        - Total Idoom Net Profits (from Epay sales summary)
+        Equation:
+        Left Side = Operational Wallet + Cards Inventory Value + Profit Account + Expenses + In-Transit
+        Right Side = Idoom Capital + Total Net Profits
+        Discrepancy = Left Side - Right Side
+        """
+        from ..models import (
+            StellarWallet,
+            ExpenseRecord,
+            CapitalEntry,
+            MonitoringGlobalSettings,
+            WalletFamily,
+            WalletRole,
+            OperationalFamily,
+            AuditStatus,
+            IdoomBatchRefill,
+            IdoomRefundRecord,
+            AccountWorkingCapital,
+        )
+        from .epay_service import EpaySyncService
+
+        sync_reports = {"wallet": None, "stock": None, "financial_summary": None, "transactions": None}
+
+        # 1. Fetch live Epay data
+        wallet_data = EpaySyncService.sync_idoom_wallet()
+        stock_data = EpaySyncService.sync_idoom_stock()
+        financial_summary = EpaySyncService.sync_idoom_financial_summary()
+        tx_data = EpaySyncService.sync_idoom_transactions(limit=10)
+
+        sync_reports["wallet"] = wallet_data
+        sync_reports["stock"] = stock_data
+        sync_reports["financial_summary"] = financial_summary
+        sync_reports["transactions"] = tx_data
+
+        operational_wallet_dzd = Decimal(str(wallet_data.get("balance_dzd") or 0.00)).quantize(Decimal("0.01"))
+        stock_inventory_dzd = Decimal(str(stock_data.get("total_available_value_dzd") or stock_data.get("total_inventory_value_dzd") or 0.00)).quantize(Decimal("0.01"))
+
+        # 2. Idoom Stellar Collection Wallet (DZT)
+        idoom_collection_wallets = StellarWallet.objects.filter(
+            is_active=True,
+            family=WalletFamily.IDOOM,
+            role=WalletRole.COLLECTION
+        )
+        for icw in idoom_collection_wallets:
+            try:
+                StellarService.sync_wallet(icw)
+            except Exception as e:
+                logger.warning(f"Failed to sync Idoom collection wallet {icw.name}: {e}")
+        idoom_collection_dzt = idoom_collection_wallets.aggregate(total=Sum('dzt_balance'))['total'] or Decimal("0.00")
+
+        # 3. Idoom Profit Reserve Wallet / Account
+        idoom_profit_wallets = StellarWallet.objects.filter(
+            is_active=True,
+            family=WalletFamily.IDOOM,
+            role=WalletRole.PROFIT
+        )
+        idoom_profit_dzd = idoom_profit_wallets.aggregate(total=Sum('dzt_balance'))['total'] or Decimal("0.00")
+
+        # 4. Idoom Operational Expenses
+        idoom_expenses = ExpenseRecord.objects.filter(
+            system_type=OperationalFamily.IDOOM
+        ).aggregate(total=Sum('amount_dzd'))['total'] or Decimal("0.00")
+
+        # 5. In-transit refills (if any pending)
+        in_transit_dzd = Decimal("0.00")
+
+        # Left Side Total (Assets + On-Chain DZT + Stock + Profits Reserve + Expenses)
+        left_side = (operational_wallet_dzd + stock_inventory_dzd + idoom_collection_dzt + idoom_profit_dzd + idoom_expenses + in_transit_dzd).quantize(Decimal("0.01"))
+
+        # 6. Right Side: Idoom Working Capital + Total Net Profits
+        working_capital_obj = AccountWorkingCapital.objects.filter(family=OperationalFamily.IDOOM).first()
+        idoom_capital = working_capital_obj.capital_amount_dzd if working_capital_obj else Decimal("0.00")
+        if idoom_capital <= 0:
+            idoom_capital = CapitalEntry.objects.filter(
+                destination_wallet__family=WalletFamily.IDOOM
+            ).aggregate(total=Sum('amount_dzd'))['total'] or Decimal("0.00")
+
+        idoom_net_profit_dzd = Decimal(str(financial_summary.get("net_profit_dzd") or 0.00)).quantize(Decimal("0.01"))
+
+        right_side = (idoom_capital + idoom_net_profit_dzd).quantize(Decimal("0.01"))
+
+        discrepancy = (left_side - right_side).quantize(Decimal("0.01"))
+        is_balanced = abs(discrepancy) < Decimal("1.00")
+        status = AuditStatus.BALANCED if is_balanced else AuditStatus.DISCREPANCY_DETECTED
+
+        has_in_flight = tx_data.get("has_in_flight_processing", False)
+
+        return {
+            "timestamp": timezone.now(),
+            "status": status,
+            "is_balanced": is_balanced,
+            "discrepancy": discrepancy,
+            "operational_wallet_dzd": operational_wallet_dzd,
+            "stock_inventory_dzd": stock_inventory_dzd,
+            "idoom_collection_dzt": idoom_collection_dzt,
+            "idoom_profit_dzd": idoom_profit_dzd,
+            "idoom_expenses_dzd": idoom_expenses,
+            "in_transit_dzd": in_transit_dzd,
+            "left_side_total": left_side,
+            "idoom_capital": idoom_capital,
+            "idoom_net_profit_dzd": idoom_net_profit_dzd,
+            "right_side_total": right_side,
+            "has_in_flight_processing": has_in_flight,
+            "sync_reports": sync_reports,
         }
 
     @classmethod

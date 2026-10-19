@@ -70,6 +70,8 @@ from .models import (
     ReplenishmentWindowStatus,
     BybitAccount,
     AiraloAccount,
+    IdoomBatchRefill,
+    IdoomRefundRecord,
 )
 from .services.audit_service import AuditService
 from .services.balance_engine import BalanceEngine
@@ -1951,3 +1953,66 @@ class InstitutionalUserAdmin(BaseUserAdmin):
             u.groups.clear()
             u.groups.add(g)
         self.message_user(request, f"Assigned Compliance & Financial Auditor role to {queryset.count()} user(s).")
+
+
+# ==============================================================================
+#  IDOOM (ALGÉRIE TÉLÉCOM) OPERATIONS & AUDIT ADMIN
+# ==============================================================================
+
+@admin.register(IdoomBatchRefill)
+class IdoomBatchRefillAdmin(InstitutionalAuditAdminMixin, admin.ModelAdmin):
+    list_display = (
+        'batch_reference',
+        'total_cards_count',
+        'formatted_face_value',
+        'formatted_cost',
+        'formatted_profit',
+        'executed_by',
+        'created_at',
+    )
+    search_fields = ('batch_reference', 'uploaded_file_name')
+    list_filter = ('created_at',)
+    readonly_fields = ('created_at',)
+
+    def formatted_face_value(self, obj):
+        val = obj.total_face_value_dzd or Decimal("0.00")
+        return format_html('<span style="font-family: monospace; font-weight: bold; color: #0284c7;">{:,.2f} DZD</span>', val)
+    formatted_face_value.short_description = "Face Value"
+
+    def formatted_cost(self, obj):
+        val = obj.total_cost_dzd or Decimal("0.00")
+        return format_html('<span style="font-family: monospace; font-weight: bold; color: #dc2626;">{:,.2f} DZD</span>', val)
+    formatted_cost.short_description = "Procurement Cost"
+
+    def formatted_profit(self, obj):
+        val = obj.expected_profit_dzd or Decimal("0.00")
+        return format_html('<span style="font-family: monospace; font-weight: bold; color: #16a34a;">{:,.2f} DZD</span>', val)
+    formatted_profit.short_description = "Segregated Profit"
+
+
+@admin.register(IdoomRefundRecord)
+class IdoomRefundRecordAdmin(InstitutionalAuditAdminMixin, admin.ModelAdmin):
+    list_display = (
+        'refund_reference',
+        'epay_transaction_id',
+        'client_phone_or_account',
+        'formatted_amount',
+        'formatted_reversed_profit',
+        'reason',
+        'executed_by',
+        'created_at',
+    )
+    search_fields = ('refund_reference', 'epay_transaction_id', 'client_phone_or_account')
+    list_filter = ('reason', 'created_at')
+    readonly_fields = ('created_at',)
+
+    def formatted_amount(self, obj):
+        val = obj.denomination_dzd or Decimal("0.00")
+        return format_html('<span style="font-family: monospace; font-weight: bold; color: #dc2626;">{:,.2f} DZD</span>', val)
+    formatted_amount.short_description = "Refunded Face Value"
+
+    def formatted_reversed_profit(self, obj):
+        val = obj.reversed_profit_dzd or Decimal("0.00")
+        return format_html('<span style="font-family: monospace; font-weight: bold; color: #e11d48;">-{:,.2f} DZD</span>', val)
+    formatted_reversed_profit.short_description = "Reversed Profit"
+

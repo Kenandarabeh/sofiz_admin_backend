@@ -38,6 +38,9 @@ from .api_views import (
     UnifiedAccountsMonitoringAPIView,
     G2BulkReplenishmentWindowViewSet,
     DailyOperationsProfitsAPIView,
+    IdoomMonitoringAPIView,
+    IdoomWithdrawalsRefillAPIView,
+    IdoomRefundRollbackAPIView,
 )
 from .auth_views import (
     LoginAPIView,
@@ -92,6 +95,11 @@ urlpatterns = [
     path('monitoring/esim/', eSIMMonitoringAPIView.as_view(), name='api-esim-monitoring'),
     path('monitoring/esim/sync-bybit/', eSIMSyncBybitAPIView.as_view(), name='api-esim-sync-bybit'),
     path('monitoring/esim/sync-airalo/', eSIMSyncAiraloAPIView.as_view(), name='api-esim-sync-airalo'),
+
+    # Dedicated Idoom (Algérie Télécom) Monitoring, Refill & Refund
+    path('monitoring/idoom/', IdoomMonitoringAPIView.as_view(), name='api-idoom-monitoring'),
+    path('idoom/refill/', IdoomWithdrawalsRefillAPIView.as_view(), name='api-idoom-refill'),
+    path('idoom/refund/', IdoomRefundRollbackAPIView.as_view(), name='api-idoom-refund'),
 
     # Binance Live Integration
     path('binance/<str:action_name>/', BinanceLiveAPIView.as_view(), name='api-binance-live'),

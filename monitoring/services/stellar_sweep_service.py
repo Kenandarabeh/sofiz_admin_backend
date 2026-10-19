@@ -118,6 +118,20 @@ class StellarSweepService:
                 role=WalletRole.COLLECTION,
                 is_active=True
             ))
+        elif family == 'IDOOM':
+            profit_vault = (
+                StellarWallet.objects.filter(family=WalletFamily.IDOOM, role=WalletRole.PROFIT, is_active=True).first() or
+                StellarWallet.objects.filter(role=WalletRole.PROFIT, is_active=True).first()
+            )
+            sweep_vault = (
+                StellarWallet.objects.filter(family=WalletFamily.TREASURY, role=WalletRole.VAULT, is_active=True).first() or
+                StellarWallet.objects.filter(role=WalletRole.WITHDRAWAL, is_active=True).first()
+            )
+            collection_wallets = list(StellarWallet.objects.filter(
+                family=WalletFamily.IDOOM,
+                role=WalletRole.COLLECTION,
+                is_active=True
+            ))
         else:
             sweep_vault = (
                 StellarWallet.objects.filter(family=WalletFamily.TREASURY, role=WalletRole.VAULT, is_active=True).first() or
@@ -378,6 +392,12 @@ class StellarSweepService:
         elif family == 'ESIM':
             collection_wallets = list(StellarWallet.objects.filter(
                 family=WalletFamily.ESIM,
+                role=WalletRole.COLLECTION,
+                is_active=True
+            ))
+        elif family == 'IDOOM':
+            collection_wallets = list(StellarWallet.objects.filter(
+                family=WalletFamily.IDOOM,
                 role=WalletRole.COLLECTION,
                 is_active=True
             ))

@@ -4,6 +4,7 @@ Powered by SofizPay Debug Engine
 """
 import logging
 from decimal import Decimal
+from django.conf import settings
 from .sofizpay_debug import (
     send_email,
     send_sofizpay_debug_alert,
@@ -21,6 +22,9 @@ class EmailAlertService:
 
     @classmethod
     def send_discrepancy_alert(cls, discrepancy_amount: Decimal, audit_log=None):
+        if not getattr(settings, "EMAIL_ALERTS_ENABLED", False):
+            logger.info(f"[EmailAlertService] Suppressed discrepancy alert ({discrepancy_amount:,.2f} DZT): Email alerts globally disabled.")
+            return False
         try:
             from monitoring.models import G2BulkReplenishmentWindow
             if G2BulkReplenishmentWindow.is_replenishment_active():
@@ -40,6 +44,9 @@ class EmailAlertService:
 
     @classmethod
     def send_low_balance_alert(cls, provider_name: str, current_balance: Decimal, threshold: Decimal, currency: str = "USD"):
+        if not getattr(settings, "EMAIL_ALERTS_ENABLED", False):
+            logger.info(f"[EmailAlertService] Suppressed low balance alert for {provider_name}: Email alerts globally disabled.")
+            return False
         if provider_name and ("G2Bulk" in provider_name or "G2BULK" in provider_name):
             try:
                 from monitoring.models import G2BulkReplenishmentWindow
