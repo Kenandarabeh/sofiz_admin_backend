@@ -2928,8 +2928,12 @@ class UtilityMonitoringAPIView(APIView):
                 'message': 'BaridiMob balance has not been refreshed in over 3 minutes.',
             })
 
+        quotas = BalanceEngine.get_walid_withdrawal_quotas()
+        factures_target_quota = float(quotas.get('factures_target_quota', 0))
+
         return Response({
             'success': True,
+            'factures_working_quota_dzd': factures_target_quota,
             'utility_baridimob_min_threshold_dzd': float(settings.utility_baridimob_min_threshold_dzd or 10000.0),
             'issues': issues,
             'equation': {
