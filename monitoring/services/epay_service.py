@@ -9,7 +9,8 @@ import os
 import httpx
 from django.conf import settings
 from django.utils import timezone
-from ..models import MonitoringGlobalSettings, GameProfitRecord, UtilityBillRecord
+from django.utils.dateparse import parse_datetime
+from ..models import MonitoringGlobalSettings, GameProfitRecord, UtilityBillRecord, UtilityServiceType
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +157,8 @@ class EpaySyncService:
             params["service"] = service
 
         last_error = None
+        valid_services = [c[0] for c in UtilityServiceType.choices]
+
         for key in keys_to_try:
             headers = {"X-API-KEY": key, "Accept": "application/json"}
             try:
@@ -171,8 +174,17 @@ class EpaySyncService:
                             if not ref:
                                 continue
                             srv = b.get("service", "SONELGAZ")
-                            if srv not in [c[0] for c in UtilityBillRecord.BILL_SERVICES]:
+                            if srv not in valid_services:
                                 srv = "SONELGAZ"
+
+                            p_date = None
+                            raw_date = b.get("payment_date")
+                            if raw_date:
+                                p_date = parse_datetime(str(raw_date))
+                                if p_date and timezone.is_naive(p_date):
+                                    p_date = timezone.make_aware(p_date)
+                            if not p_date:
+                                p_date = timezone.now()
 
                             UtilityBillRecord.objects.update_or_create(
                                 bill_reference=ref,
@@ -182,6 +194,7 @@ class EpaySyncService:
                                     "bill_amount_dzd": Decimal(str(b.get("bill_amount_dzd", 0.0))),
                                     "commission_earned_dzd": Decimal(str(b.get("commission_earned_dzd", 0.0))),
                                     "is_settled": b.get("is_settled", True),
+                                    "payment_date": p_date,
                                 }
                             )
                             synced_count += 1
@@ -191,6 +204,7 @@ class EpaySyncService:
                     else:
                         last_error = f"HTTP {res.status_code}: {res.text}"
             except Exception as e:
+                logger.error(f"Error syncing bills with key: {e}")
                 last_error = str(e)
 
         return {"success": False, "error": last_error}
