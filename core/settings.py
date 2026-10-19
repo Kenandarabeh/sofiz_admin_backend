@@ -3,7 +3,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / '.env', override=True)
+load_dotenv(BASE_DIR / '.env', override=False)
 
 SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-sofizadmin-key-2026-prod')
 DEBUG = os.getenv('DEBUG', 'True') == 'True'

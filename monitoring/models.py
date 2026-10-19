@@ -3,6 +3,7 @@ from decimal import Decimal
 from django.db import models
 from django.utils import timezone
 from django.contrib.auth.models import User
+from core.encryption import EncryptedCharField, EncryptedTextField
 
 
 # ==============================================================================
@@ -168,7 +169,7 @@ class MonitoringGlobalSettings(models.Model):
         help_text="Operating mode: Real Live Data strictly enforced."
     )
 
-    g2bulk_api_key = models.CharField(max_length=255, blank=True, null=True, verbose_name="G2Bulk API Key")
+    g2bulk_api_key = EncryptedCharField(max_length=500, blank=True, null=True, verbose_name="G2Bulk API Key")
     g2bulk_base_url = models.CharField(max_length=255, default="https://api.g2bulk.com/v1", verbose_name="G2Bulk Base URL")
     stellar_horizon_url = models.CharField(max_length=255, default="https://horizon.stellar.org", verbose_name="Stellar Horizon URL")
     dzt_asset_code = models.CharField(max_length=20, default="DZT", verbose_name="DZT Asset Code")
@@ -184,19 +185,19 @@ class MonitoringGlobalSettings(models.Model):
         verbose_name="Exchange Rate (1 USD = X DZT/DZD)"
     )
     epay_api_url = models.CharField(max_length=255, default="https://epay.sofizpay.com/api/operations", verbose_name="Epay API URL")
-    epay_api_key = models.CharField(max_length=255, default="sk_sofizadmin_live_52041594509c51cd5cda405b244d9b703e684225473e63164ab614c681de7779", verbose_name="Epay API Key (X-API-KEY)")
+    epay_api_key = EncryptedCharField(max_length=500, default="sk_sofizadmin_live_52041594509c51cd5cda405b244d9b703e684225473e63164ab614c681de7779", verbose_name="Epay API Key (X-API-KEY)")
     binance_api_key = models.CharField(max_length=255, blank=True, null=True, verbose_name="Binance API Key")
-    binance_api_secret = models.CharField(max_length=255, blank=True, null=True, verbose_name="Binance API Secret")
+    binance_api_secret = EncryptedCharField(max_length=500, blank=True, null=True, verbose_name="Binance API Secret")
     binance_merchant_id = models.CharField(max_length=100, blank=True, null=True, verbose_name="Binance Merchant ID / Pay ID")
     
     # Bybit Crypto Exchange (eSIM Visa Card Funding)
     bybit_api_key = models.CharField(max_length=255, blank=True, null=True, verbose_name="Bybit API Key")
-    bybit_api_secret = models.CharField(max_length=255, blank=True, null=True, verbose_name="Bybit API Secret")
+    bybit_api_secret = EncryptedCharField(max_length=500, blank=True, null=True, verbose_name="Bybit API Secret")
     bybit_user_id = models.CharField(max_length=100, default="477447830", verbose_name="Bybit User ID")
     
     # Airalo eSIM Provider
     airalo_client_id = models.CharField(max_length=255, blank=True, null=True, verbose_name="Airalo Client ID")
-    airalo_client_secret = models.CharField(max_length=255, blank=True, null=True, verbose_name="Airalo Client Secret")
+    airalo_client_secret = EncryptedCharField(max_length=500, blank=True, null=True, verbose_name="Airalo Client Secret")
     airalo_base_url = models.CharField(max_length=255, default="https://partners-api.airalo.com/v2", verbose_name="Airalo Base URL")
     airalo_min_threshold_usd = models.DecimalField(
         max_digits=15,
@@ -251,8 +252,8 @@ class MonitoringGlobalSettings(models.Model):
         verbose_name="Central Treasury / Vault Wallet (Destination)"
     )
     # BaridiMob Gateway API Credentials
-    baridimob_secret_token = models.CharField(
-        max_length=255,
+    baridimob_secret_token = EncryptedCharField(
+        max_length=500,
         blank=True,
         null=True,
         default="37dff1b2b1244a4ea3dcbc6b1c0d078e3830fce0f3474ccdaffd5a1d56c729f1",
@@ -557,7 +558,7 @@ class StellarWallet(models.Model):
         verbose_name="Legacy Category"
     )
     public_address = models.CharField(max_length=100, unique=True, db_index=True, verbose_name="Stellar Public Address (G...)")
-    secret_seed = models.CharField(max_length=100, blank=True, null=True, verbose_name="Stellar Secret Seed (S...)")
+    secret_seed = EncryptedCharField(max_length=500, blank=True, null=True, verbose_name="Stellar Secret Seed (S...)")
     dzt_balance = models.DecimalField(max_digits=18, decimal_places=4, default=Decimal("0.0000"), verbose_name="Live DZT Balance")
     is_active = models.BooleanField(default=True, db_index=True, verbose_name="Is Active")
     last_synced_at = models.DateTimeField(null=True, blank=True, verbose_name="Last Synced At")

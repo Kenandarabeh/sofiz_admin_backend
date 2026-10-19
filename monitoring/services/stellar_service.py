@@ -135,7 +135,12 @@ class StellarService:
 
         # Resolve Source Wallet
         if not source_wallet and source_seed:
-            source_wallet = StellarWallet.objects.filter(secret_seed=source_seed).first()
+            try:
+                from stellar_sdk import Keypair
+                source_pub = Keypair.from_secret(source_seed.strip()).public_key
+                source_wallet = StellarWallet.objects.filter(public_address=source_pub).first()
+            except Exception:
+                source_wallet = None
         if not source_wallet:
             source_wallet = settings.games_collection_wallet or StellarWallet.objects.filter(category='GAMING', is_active=True).first()
 

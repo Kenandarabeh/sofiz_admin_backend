@@ -8,11 +8,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sofiz_secure_password_2026}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    # Security: Strictly bound to 127.0.0.1 (Loopback only).
-    # Completely blocked and invisible to external networks, LAN, and public IPs.
-    # In pure containerized production, comment out 'ports' entirely to close the host port.
-    ports:
-      - "127.0.0.1:5433:5432"
+    # Pure private container network (no host ports exposed)
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sofiz_user} -d ${POSTGRES_DB:-sofizadmin_db}"]
@@ -23,10 +19,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: sofizadmin_redis
-    # Security: Strictly bound to 127.0.0.1 (Loopback only).
-    # Completely blocked from external access.
-    ports:
-      - "127.0.0.1:6380:6379"
+    # Pure private container network (no host ports exposed)
     restart: unless-stopped
 
   web:

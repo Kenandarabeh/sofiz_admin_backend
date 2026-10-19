@@ -173,14 +173,14 @@ class FinancialMonitoringTests(TestCase):
     def test_dashboard_and_api_views(self):
         """Test HTTP status for root redirect and API endpoints with and without API key"""
         resp = self.client.get('/')
-        self.assertEqual(resp.status_code, 302) # Redirects to /admin/
+        self.assertEqual(resp.status_code, 200) # Root health JSON endpoint
 
         # Test unauthorized request (without API Key)
         resp_unauth = self.client.get(reverse('monitoring:api_status'))
         self.assertEqual(resp_unauth.status_code, 403)
 
         # Test authorized request (with API Key)
-        api_key = 'sk_live_sofiz_fin_8f93e1b072c449a8bb63920e5c1d84f7'
+        api_key = 'sk_sofizadmin_live_52041594509c51cd5cda405b244d9b703e684225473e63164ab614c681de7779'
         resp_status = self.client.get(reverse('monitoring:api_status'), HTTP_X_API_KEY=api_key)
         self.assertEqual(resp_status.status_code, 200)
         self.assertIn('is_balanced', resp_status.json())
