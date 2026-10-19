@@ -452,6 +452,48 @@ class WalletSweepLogViewSet(viewsets.ReadOnlyModelViewSet):
             logger.error(f"Error in sweep trigger API: {e}", exc_info=True)
             return Response({'success': False, 'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+    @action(detail=False, methods=['post'], url_path='transfer')
+    def custom_transfer(self, request):
+        """
+        Executes a targeted audited sweep transfer (e.g. 1 DZT audit sweep) between two wallets.
+        """
+        try:
+            source_wallet_id = request.data.get('source_wallet_id')
+            destination_wallet_id = request.data.get('destination_wallet_id')
+            amount = Decimal(str(request.data.get('amount', '1.0000')))
+            sweep_type = request.data.get('sweep_type', 'SWEEP_TRANSFER')
+            memo = request.data.get('memo', 'Institutional 1 DZT Audit Sweep')
+
+            if amount <= Decimal("0.0000"):
+                return Response({'success': False, 'error': 'Amount must be greater than zero.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            src = StellarWallet.objects.filter(id=source_wallet_id).first() if source_wallet_id else None
+            dst = StellarWallet.objects.filter(id=destination_wallet_id).first() if destination_wallet_id else None
+
+            if not src:
+                src = StellarWallet.objects.filter(role=WalletRole.COLLECTION, is_active=True, dzt_balance__gte=amount).first()
+            if not dst:
+                dst = (
+                    StellarWallet.objects.filter(role=WalletRole.WITHDRAWAL, is_active=True).first() or
+                    StellarWallet.objects.filter(role=WalletRole.VAULT, is_active=True).first()
+                )
+
+            if not src or not dst:
+                return Response({'success': False, 'error': 'Valid active source and destination wallets required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            res = StellarService.send_payment(
+                source_wallet=src,
+                destination_wallet=dst,
+                amount=amount,
+                sweep_type=sweep_type,
+                memo_text=memo
+            )
+            return Response(res)
+        except Exception as e:
+            logger.error(f"Error in custom sweep transfer API: {e}", exc_info=True)
+            return Response({'success': False, 'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 
 # ==============================================================================
 # 4. 4-STAGE FUNDING PIPELINE (BARIDIMOB -> P2P -> G2BULK)
