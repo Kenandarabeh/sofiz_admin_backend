@@ -38,12 +38,20 @@ class Command(BaseCommand):
             default=None,
             help='Target date in YYYY-MM-DD format (default: today)'
         )
+        parser.add_argument(
+            '--family',
+            type=str,
+            default='ALL',
+            choices=['ALL', 'GAME', 'FACTURE', 'ESIM'],
+            help='Wallet family to sweep (ALL, GAME, FACTURE, ESIM). Default: ALL'
+        )
 
     def handle(self, *args, **options):
         dry_run = options['dry_run']
         audit_only = options['audit_only']
         force = options['force']
         date_str = options['date']
+        family = options['family']
 
         target_date = None
         if date_str:
@@ -55,7 +63,8 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.SUCCESS("=" * 65))
         self.stdout.write(self.style.SUCCESS("🏦 SOFIZADMIN: STELLAR MIDNIGHT SWEEP & PROFIT ALLOCATION"))
-        self.stdout.write(self.style.SUCCESS(f"📅 Target Date: {target_date or timezone.now().date()}"))
+        self.stdout.write(self.style.SUCCESS(f"📅 Target Date: {target_date or timezone.now().date()} | Family: {family}"))
+        self.stdout.write(self.style.SUCCESS("⚙️  Mode: 1.0000 DZT Strict Testing Mode across all stages"))
         if dry_run:
             self.stdout.write(self.style.WARNING("⚠️ Mode: DRY-RUN (Simulation only)"))
         if force:
@@ -64,15 +73,16 @@ class Command(BaseCommand):
 
         if audit_only:
             self.stdout.write("\n🔍 Running Pre-Sweep Safety Audit...")
-            audit = StellarSweepService.pre_sweep_audit(target_date=target_date)
+            audit = StellarSweepService.pre_sweep_audit(target_date=target_date, family=family)
             self._print_audit_report(audit)
             return
 
-        self.stdout.write("\n🚀 Starting Sweep Pipeline...")
+        self.stdout.write("\n🚀 Starting 2-Stage 1 DZT Sweep Pipeline (Profit Allocation + Operational Sweep)...")
         result = StellarSweepService.execute_daily_sweep(
             dry_run=dry_run,
             force=force,
-            target_date=target_date
+            target_date=target_date,
+            family=family
         )
 
         audit = result.get("audit", {})
@@ -102,8 +112,10 @@ class Command(BaseCommand):
 
         sweep_vault = audit.get("sweep_vault")
         profit_vault = audit.get("profit_vault")
-        self.stdout.write(f"Daily Sweep Vault:   {sweep_vault.name if sweep_vault else '❌ NOT CONFIGURED'}")
-        self.stdout.write(f"Profit Reserve Vault: {profit_vault.name if profit_vault else '❌ NOT CONFIGURED'}")
+        sv_name = sweep_vault.get('name') if isinstance(sweep_vault, dict) else (sweep_vault.name if sweep_vault else '❌ NOT CONFIGURED')
+        pv_name = profit_vault.get('name') if isinstance(profit_vault, dict) else (profit_vault.name if profit_vault else '❌ NOT CONFIGURED')
+        self.stdout.write(f"Daily Sweep Vault:   {sv_name}")
+        self.stdout.write(f"Profit Reserve Vault: {pv_name}")
 
         self.stdout.write("\n--- 👛 Collection Wallets ---")
         for w in audit.get("collection_wallets", []):

@@ -306,14 +306,15 @@ class StellarSweepService:
         return send_email(recipients, subject, text_body, html_message=html_body)
 
     @classmethod
-    def execute_daily_sweep(cls, dry_run: bool = False, force: bool = False, target_date: date = None, family: str = 'GAME') -> dict:
+    def execute_daily_sweep(cls, dry_run: bool = False, force: bool = False, target_date: date = None, family: str = 'ALL') -> dict:
         """
-        Executes the midnight sweep:
+        Executes the midnight sweep across all institutional wallet stages:
         1. Runs pre_sweep_audit.
         2. If audit fails and not force: aborts and sends email alert.
         3. If audit passes (or force=True):
-           - Transfers today's profit portion to Profit Reserve Vault.
-           - Transfers remaining operational balance to Daily Sweep Vault.
+           - Stage 1: Transfer Profit Allocation (strictly 1.0000 DZT) to dedicated Family Profit Wallet.
+           - Stage 2: Transfer Operational Sweep (strictly 1.0000 DZT) to dedicated Family Withdrawal Wallet.
+           - Stage 3: Transfer Operational Consolidation (strictly 1.0000 DZT) from Family Withdrawal Wallet to Central Treasury Vault.
         """
         audit = cls.pre_sweep_audit(target_date=target_date, family=family)
 
@@ -386,11 +387,12 @@ class StellarSweepService:
                 is_active=True
             ))
 
+        # Date string for audit memos
+        date_memo_str = str(audit.get('date', timezone.now().date()))
+
         for wallet in collection_wallets:
             if wallet.dzt_balance <= Decimal("0.0000"):
                 continue
-
-            transferable_dzt = wallet.dzt_balance
 
             # Resolve Dedicated Family Profit and Sweep Destinations
             family_profit_dest = (
@@ -402,35 +404,28 @@ class StellarSweepService:
                 sweep_vault
             )
 
-            # Split: Profit vs Operational Sweep (Cost of Goods / Working Capital)
-            profit_part = Decimal("0.0000")
-            sweep_part = Decimal("0.0000")
-
-            if remaining_profit_to_allocate > 0:
-                profit_part = min(transferable_dzt, remaining_profit_to_allocate)
-                remaining_profit_to_allocate -= profit_part
-                transferable_dzt -= profit_part
-
-            sweep_part = transferable_dzt
-
-            # 1. Transfer Profit Part to Family Dedicated Profit Wallet
-            if profit_part > Decimal("0.0000") and family_profit_dest:
+            # User Testing Mode: Enforce strictly 1.0000 DZT per stage across all sweep transfers
+            # Stage 1: Transfer Profit Allocation (1.0000 DZT) to Family Profit Wallet
+            if family_profit_dest and wallet.dzt_balance >= Decimal("1.0000"):
                 res_profit = StellarService.send_payment(
                     source_wallet=wallet,
                     destination_wallet=family_profit_dest,
-                    amount=profit_part,
-                    memo_text=f"PROFIT-{audit.get('date', '')}"[:28],
+                    amount=Decimal("1.0000"),
+                    memo_text=f"PROFIT-{date_memo_str}"[:28],
                     sweep_type='PROFIT_TRANSFER'
                 )
                 executed_transfers.append(res_profit)
 
-            # 2. Transfer Sweep Part to Family Withdrawal Wallet (Liquidity for Supplier Refill)
-            if sweep_part > Decimal("0.0000") and family_sweep_dest:
+            # Refresh wallet balance from database before Stage 2
+            wallet.refresh_from_db()
+
+            # Stage 2: Transfer Operational Sweep (1.0000 DZT) to Family Withdrawal Wallet
+            if family_sweep_dest and wallet.dzt_balance >= Decimal("1.0000"):
                 res_sweep = StellarService.send_payment(
                     source_wallet=wallet,
                     destination_wallet=family_sweep_dest,
-                    amount=sweep_part,
-                    memo_text=f"SWEEP-{audit.get('date', '')}"[:28],
+                    amount=Decimal("1.0000"),
+                    memo_text=f"SWEEP-{date_memo_str}"[:28],
                     sweep_type='SWEEP_TRANSFER'
                 )
                 executed_transfers.append(res_sweep)

@@ -430,7 +430,7 @@ class WalletSweepLogViewSet(viewsets.ReadOnlyModelViewSet):
     def trigger(self, request):
         """Manually trigger the automated daily profit sweep and operational liquidity split on-demand"""
         try:
-            family = request.data.get('family', 'GAME')
+            family = request.data.get('family', 'ALL')
             force = request.data.get('force', False)
             res = StellarSweepService.execute_daily_sweep(family=family, force=force)
             return Response({

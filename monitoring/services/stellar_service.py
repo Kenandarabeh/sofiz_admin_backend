@@ -7,7 +7,7 @@ import uuid
 from decimal import Decimal
 from django.utils import timezone
 import httpx
-from ..models import StellarWallet, MonitoringGlobalSettings, WalletSweepLog, SweepStatus, SweepType
+from ..models import StellarWallet, MonitoringGlobalSettings, WalletSweepLog, SweepStatus, SweepType, WalletRole
 
 logger = logging.getLogger(__name__)
 
@@ -80,11 +80,20 @@ class StellarService:
         """Sync a single Stellar wallet in DB from live Horizon API"""
         try:
             res = cls.get_account_balances(wallet.public_address, client=client)
-            wallet.dzt_balance = res["dzt"]
+            # If on-chain balance has positive DZT, sync directly from Horizon.
+            # If on-chain DZT is 0, but the wallet is an internal ledger vault (WITHDRAWAL or PROFIT),
+            # preserve the internal ledger balance accumulated through audited sweeps/withdrawals.
+            if res["dzt"] > Decimal("0.0000"):
+                wallet.dzt_balance = res["dzt"]
+            elif wallet.role in [WalletRole.WITHDRAWAL, WalletRole.PROFIT]:
+                pass  # Preserve audited internal ledger balance
+            else:
+                wallet.dzt_balance = res["dzt"]
+
             wallet.last_synced_at = timezone.now()
             wallet.last_error = None
-            wallet.save()
-            return {"success": True, "wallet": wallet, "dzt": res["dzt"]}
+            wallet.save(update_fields=['dzt_balance', 'last_synced_at', 'last_error', 'updated_at'])
+            return {"success": True, "wallet": wallet, "dzt": wallet.dzt_balance}
         except Exception as e:
             error_msg = str(e)
             logger.debug(f"Stellar wallet {wallet.public_address} managed via audited internal ledger: {error_msg}")
