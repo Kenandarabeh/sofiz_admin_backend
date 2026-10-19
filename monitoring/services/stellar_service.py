@@ -77,30 +77,39 @@ class StellarService:
 
     @classmethod
     def sync_wallet(cls, wallet: StellarWallet, client: httpx.Client = None) -> dict:
-        """Sync a single Stellar wallet in DB from live Horizon API"""
+        """
+        Sync a single Stellar wallet directly from live Stellar Horizon on-chain API.
+        Strict institutional standard: Blockchain consensus is the single source of truth.
+        Zero database fallback or synthetic balances. If account is missing/errored, report error explicitly.
+        """
         try:
             res = cls.get_account_balances(wallet.public_address, client=client)
-            # If on-chain balance has positive DZT, sync directly from Horizon.
-            # If on-chain DZT is 0, but the wallet is an internal ledger vault (WITHDRAWAL or PROFIT),
-            # preserve the internal ledger balance accumulated through audited sweeps/withdrawals.
-            if res["dzt"] > Decimal("0.0000"):
-                wallet.dzt_balance = res["dzt"]
-            elif wallet.role in [WalletRole.WITHDRAWAL, WalletRole.PROFIT]:
-                pass  # Preserve audited internal ledger balance
-            else:
-                wallet.dzt_balance = res["dzt"]
-
+            # Blockchain is absolute truth: always record exact on-chain balance
+            wallet.dzt_balance = res["dzt"]
             wallet.last_synced_at = timezone.now()
             wallet.last_error = None
             wallet.save(update_fields=['dzt_balance', 'last_synced_at', 'last_error', 'updated_at'])
-            return {"success": True, "wallet": wallet, "dzt": wallet.dzt_balance}
+            return {
+                "success": True,
+                "wallet": wallet,
+                "dzt": wallet.dzt_balance,
+                "xlm": res.get("xlm", Decimal("0.0000")),
+                "on_chain": True
+            }
         except Exception as e:
             error_msg = str(e)
-            logger.debug(f"Stellar wallet {wallet.public_address} managed via audited internal ledger: {error_msg}")
+            logger.warning(f"Live Stellar Horizon sync failed for wallet '{wallet.name}' ({wallet.public_address}): {error_msg}")
+            wallet.dzt_balance = Decimal("0.0000")
             wallet.last_synced_at = timezone.now()
-            wallet.last_error = None
-            wallet.save(update_fields=['last_synced_at', 'last_error', 'updated_at'])
-            return {"success": True, "wallet": wallet, "dzt": wallet.dzt_balance, "fallback": True}
+            wallet.last_error = f"Blockchain Error: {error_msg}"
+            wallet.save(update_fields=['dzt_balance', 'last_synced_at', 'last_error', 'updated_at'])
+            return {
+                "success": False,
+                "wallet": wallet,
+                "dzt": Decimal("0.0000"),
+                "error": error_msg,
+                "blockchain_error": True
+            }
 
     @classmethod
     def sync_all_wallets(cls) -> list:

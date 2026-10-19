@@ -118,6 +118,11 @@ CSRF_TRUSTED_ORIGINS = [
     'http://127.0.0.1:3000',
     'http://localhost:8000',
     'http://127.0.0.1:8000',
+    'http://epay.sofizpay.com:8383',
+    'http://epay.sofizpay.com',
+    'https://epay.sofizpay.com',
+    'http://91.98.137.59:8383',
+    'http://91.98.137.59',
 ]
 
 FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5172')
@@ -181,5 +186,9 @@ OPENWA_SESSION_ID = os.getenv('OPENWA_SESSION_ID', '5169c587-641a-46c3-a6a2-4bd4
 ADMIN_URL_PATH = os.getenv('DJANGO_ADMIN_URL', '8f2a9c37/').strip('/') + '/'
 LOGIN_URL = '/' + ADMIN_URL_PATH + 'login/'
 LOGIN_REDIRECT_URL = '/' + ADMIN_URL_PATH
+
+# Obfuscated Secret API Prefix to prevent scanning and unauthorized endpoint discovery
+API_SECRET_PREFIX = os.getenv('API_SECRET_PREFIX', 'sec_8f2a9c37').strip('/')
+API_URL_PREFIX = f"{API_SECRET_PREFIX}/" if API_SECRET_PREFIX else ""
 
 

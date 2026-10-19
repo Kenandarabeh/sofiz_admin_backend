@@ -362,6 +362,18 @@ class StellarWalletViewSet(viewsets.ModelViewSet):
             qs = qs.filter(Q(name__icontains=search) | Q(public_address__icontains=search))
         return qs
 
+    def list(self, request, *args, **kwargs):
+        """
+        Always perform live on-chain sync from Stellar Horizon before listing,
+        guaranteeing that every wallet balance displayed is 100% on-chain truth.
+        """
+        if request.query_params.get('no_sync', 'false').lower() != 'true':
+            try:
+                StellarService.sync_all_wallets()
+            except Exception as e:
+                logger.error(f"Error during live parallel sync in StellarWalletViewSet: {e}")
+        return super().list(request, *args, **kwargs)
+
     def perform_create(self, serializer):
         wallet = serializer.save()
         try:
@@ -2455,6 +2467,12 @@ class GamingMonitoringAPIView(APIView):
                 logger.warning(f"Error during Salah Gaming Account auto-sync: {e}")
 
         settings = MonitoringGlobalSettings.get_settings()
+        # Always sync Gaming Wallets directly from live Stellar Horizon on-chain
+        for gw in GamingWallet.objects.filter(is_active=True):
+            try:
+                StellarService.sync_wallet(gw)
+            except Exception as e:
+                logger.warning(f"Failed live sync for gaming wallet {gw.name}: {e}")
         gaming_wallets = GamingWallet.objects.filter(is_active=True)
         suppliers = SupplierAccount.objects.filter(is_active=True)
         gaming_capital = float(settings.effective_gaming_capital)
@@ -2633,6 +2651,8 @@ class GamingMonitoringAPIView(APIView):
                     'public_address': w.public_address,
                     'dzt_balance': float(w.dzt_balance),
                     'is_active': w.is_active,
+                    'last_error': w.last_error,
+                    'last_synced_at': w.last_synced_at.strftime('%Y-%m-%d %H:%M:%S') if w.last_synced_at else None,
                 }
                 for w in gaming_wallets
             ],
@@ -2931,6 +2951,12 @@ class UtilityMonitoringAPIView(APIView):
                 logger.warning(f"Error during BaridiMob & Epay auto-sync in UtilityMonitoringAPIView: {e}")
 
         settings = MonitoringGlobalSettings.get_settings()
+        # Always sync Utility Wallets directly from live Stellar Horizon on-chain
+        for uw in UtilityWallet.objects.filter(is_active=True):
+            try:
+                StellarService.sync_wallet(uw)
+            except Exception as e:
+                logger.warning(f"Failed live sync for utility wallet {uw.name}: {e}")
         utility_wallets = UtilityWallet.objects.filter(is_active=True)
         baridi_accounts = utility_baridi_accounts
         total_utility_dzt = float(utility_wallets.aggregate(total=Sum('dzt_balance'))['total'] or 0)
@@ -3208,6 +3234,11 @@ class eSIMMonitoringAPIView(APIView):
         binance_acc = BinanceAccount.objects.filter(is_active=True).first()
 
         # Wallets (Full list of eSIM Wallets including Collection & Profit)
+        for ew in StellarWallet.objects.filter(family=WalletFamily.ESIM, is_active=True):
+            try:
+                StellarService.sync_wallet(ew)
+            except Exception as e:
+                logger.warning(f"Failed live sync for eSIM wallet {ew.name}: {e}")
         esim_wallets_qs = StellarWallet.objects.filter(family=WalletFamily.ESIM).order_by('id')
         collection_wallet = esim_wallets_qs.filter(role=WalletRole.COLLECTION, is_active=True).first()
         profit_wallet = esim_wallets_qs.filter(role=WalletRole.PROFIT, is_active=True).first()
@@ -3631,6 +3662,11 @@ class MasterLiquiditySummaryAPIView(APIView):
                 AiraloService.sync_account_balance()
             except Exception as e:
                 logger.warning(f"Could not live-sync Airalo during master liquidity sync: {e}")
+            try:
+                from .services.stellar_service import StellarService
+                StellarService.sync_all_wallets()
+            except Exception as e:
+                logger.warning(f"Could not live-sync Stellar wallets: {e}")
             try:
                 from .services.account_monitoring_service import AccountMonitoringService
                 AccountMonitoringService.capture_live_snapshots(trigger="LIVE_SYNC")

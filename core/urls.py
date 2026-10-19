@@ -19,9 +19,9 @@ def root_health_view(request):
 urlpatterns = [
     # Obfuscated Secret Admin Route
     path(settings.ADMIN_URL_PATH, admin.site.urls),
-    path('api/', include('monitoring.api_urls')),
-    path('api/projects/', include('projects.urls')),
-    path('', include('monitoring.urls')),
+    path(f'{settings.API_URL_PREFIX}api/', include('monitoring.api_urls')),
+    path(f'{settings.API_URL_PREFIX}api/projects/', include('projects.urls')),
+    path(f'{settings.API_URL_PREFIX}', include('monitoring.urls')),
     path('', root_health_view, name='root_health'),
 ]
 
