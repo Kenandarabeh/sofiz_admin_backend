@@ -8,6 +8,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sofiz_secure_password_2026}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    command: "postgres -c max_connections=300 -c idle_in_transaction_session_timeout=30000"
     # Pure private container network (no host ports exposed)
     restart: unless-stopped
     healthcheck:

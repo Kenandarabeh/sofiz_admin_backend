@@ -51,16 +51,24 @@ class LoginSerializer(serializers.Serializer):
                 "detail": "Master Django Admin Vault credentials cannot be used to log into the frontend application. Please access the system via the dedicated Admin Vault portal."
             })
 
-        # 2. Designated operational officers and Full Operations Administrators may access the frontend
-        allowed_frontend_users = ['sofiane_gaming', 'walid_withdrawal', 'admin_operations', 'admin']
+        # 2. Designated operational officers and Full Operations Administrators may access the frontend based on role
         profile = getattr(user, 'operator_profile', None)
-        is_frontend_admin = (
+        is_operational_officer = (
             user.is_superuser
-            or (profile and profile.mission_role == OperatorMissionRole.ALL_FAMILIES)
-            or user.groups.filter(name__in=['Full Multi-Family Administrator', 'Super Administrator']).exists()
+            or user.is_staff
+            or (profile is not None)
+            or user.groups.filter(name__in=[
+                'Full Multi-Family Administrator',
+                'Super Administrator',
+                'Withdrawal Operations Officer',
+                'Game Family Operator',
+                'Facture Family Operator',
+                'eSIM Family Operator',
+                'Treasury & P2P Officer'
+            ]).exists()
         )
 
-        if user.username not in allowed_frontend_users and not is_frontend_admin:
+        if not is_operational_officer:
             raise serializers.ValidationError({
                 "detail": "Access restricted: Only authorized operations officers are permitted to log into this workspace."
             })
@@ -129,10 +137,6 @@ class UserDetailSerializer(serializers.ModelSerializer):
         profile = getattr(obj, 'operator_profile', None)
         if profile and profile.mission_role == OperatorMissionRole.ALL_FAMILIES:
             return True
-
-        # Explicit restricted operators (e.g. sofiane_gaming, walid_withdrawal)
-        if obj.username in ['sofiane_gaming', 'walid_withdrawal']:
-            return False
 
         if profile and profile.mission_role in [
             OperatorMissionRole.GAME_OPERATOR,

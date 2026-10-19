@@ -347,14 +347,14 @@ class BalanceEngine:
         }
 
     @classmethod
-    def get_walid_withdrawal_quotas(cls) -> dict:
+    def get_operational_withdrawal_quotas(cls) -> dict:
         """
         Dynamically computes the operational quotas based on the withdrawals
-        created and dispatched by Walid (Withdrawal Operations Officer).
+        created and dispatched by the Treasury & Withdrawal Operations Officer.
         The quotas are NOT fixed ratios, but reflect live withdrawal demand:
-        - Gaming Quota: Amount withdrawn/targeted by Walid for Gaming (e.g. 10,000 DZD)
-        - eSIM Quota: Amount withdrawn/targeted by Walid for eSIM (e.g. 2,000 DZD)
-        - Factures Quota: Amount withdrawn/targeted by Walid for Factures (e.g. 50,000 DZD)
+        - Gaming Quota: Amount withdrawn/targeted for Gaming (e.g. 10,000 DZD)
+        - eSIM Quota: Amount withdrawn/targeted for eSIM (e.g. 2,000 DZD)
+        - Factures Quota: Amount withdrawn/targeted for Factures (e.g. 50,000 DZD)
         """
         from ..models import (
             WithdrawalRecord,
@@ -364,13 +364,13 @@ class BalanceEngine:
             eSIMFundingStage,
         )
 
-        # 1. Gaming withdrawal demand from Walid's active receipts
+        # 1. Gaming withdrawal demand from active receipts
         active_gaming = WithdrawalRecord.objects.filter(
             system_type=SubSystemType.GAMING,
             stage__in=[WithdrawalStage.ALLOCATED, WithdrawalStage.BINANCE_P2P]
         ).aggregate(t=Sum('amount_dzd'))['t'] or Decimal('0.00')
 
-        # 2. eSIM withdrawal demand from Walid's active receipts / fundings
+        # 2. eSIM withdrawal demand from active receipts / fundings
         active_esim_w = WithdrawalRecord.objects.filter(
             system_type=SubSystemType.ESIM,
             stage__in=[WithdrawalStage.ALLOCATED, WithdrawalStage.BINANCE_P2P]
@@ -380,7 +380,7 @@ class BalanceEngine:
         ).aggregate(t=Sum('amount_dzd'))['t'] or Decimal('0.00')
         active_esim = active_esim_w + active_esim_f
 
-        # 3. Factures / Utility withdrawal demand from Walid's active receipts
+        # 3. Factures / Utility withdrawal demand from active receipts
         active_factures = WithdrawalRecord.objects.filter(
             system_type=SubSystemType.UTILITY,
             stage__in=[WithdrawalStage.ALLOCATED, WithdrawalStage.BINANCE_P2P]
@@ -391,6 +391,11 @@ class BalanceEngine:
             'esim_target_quota': active_esim.quantize(Decimal('0.01')),
             'factures_target_quota': active_factures.quantize(Decimal('0.01')),
         }
+
+    @classmethod
+    def get_walid_withdrawal_quotas(cls) -> dict:
+        """Backward-compatible alias for operational withdrawal quotas."""
+        return cls.get_operational_withdrawal_quotas()
 
     @classmethod
     def get_salah_baridimob_allocation(cls) -> dict:
@@ -426,8 +431,8 @@ class BalanceEngine:
         )
         settings = MonitoringGlobalSettings.get_settings()
 
-        # 1. Operational Quotas derived from Walid's withdrawals
-        quotas = cls.get_walid_withdrawal_quotas()
+        # 1. Operational Quotas derived from active operational withdrawals
+        quotas = cls.get_operational_withdrawal_quotas()
         expected_gaming = quotas['gaming_target_quota']
         expected_esim = quotas['esim_target_quota']
 
@@ -470,8 +475,8 @@ class BalanceEngine:
         expected_total = (expected_gaming + expected_esim).quantize(Decimal('0.01'))
         variance = (real_balance - expected_total).quantize(Decimal('0.01'))
 
-        # Allocation based on Walid's withdrawal requirements:
-        # If real_balance covers both quotas, each gets 100% of its Walid withdrawal requirement
+        # Allocation based on active operational withdrawal requirements:
+        # If real_balance covers both quotas, each gets 100% of its withdrawal requirement
         if real_balance >= expected_total:
             available_gaming = expected_gaming
             available_esim = expected_esim

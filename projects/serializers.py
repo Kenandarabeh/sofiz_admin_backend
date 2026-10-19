@@ -73,9 +73,6 @@ class UserSummarySerializer(serializers.ModelSerializer):
         if profile and profile.mission_role == OperatorMissionRole.ALL_FAMILIES:
             return True
 
-        if obj.username in ['sofiane_gaming', 'walid_withdrawal']:
-            return False
-
         if profile and profile.mission_role in [
             OperatorMissionRole.GAME_OPERATOR,
             OperatorMissionRole.FACTURE_OPERATOR,
@@ -242,16 +239,15 @@ class TaskSerializer(serializers.ModelSerializer):
                 project = attrs.get('project') or (self.instance.project if self.instance else None)
                 is_project_lead = project and project.lead_id == user.id
 
-                # Restricted operators (such as sofiane_gaming, walid_withdrawal, and departmental operators)
-                is_restricted_operator = (
-                    user.username in ['sofiane_gaming', 'walid_withdrawal'] or
-                    (profile and profile.mission_role in [
+                # Restricted operators (departmental operators)
+                is_restricted_operator = bool(
+                    profile and profile.mission_role in [
                         OperatorMissionRole.GAME_OPERATOR,
                         OperatorMissionRole.FACTURE_OPERATOR,
                         OperatorMissionRole.ESIM_OPERATOR,
                         OperatorMissionRole.TREASURY_OFFICER,
                         OperatorMissionRole.AUDITOR,
-                    ])
+                    ]
                 )
 
                 if is_restricted_operator or not (is_admin or is_all_families or is_project_lead):
@@ -269,15 +265,14 @@ class TaskSerializer(serializers.ModelSerializer):
 
             # Auto-assign to self if user is a restricted operator and no assignee was given
             profile = getattr(user, 'operator_profile', None)
-            is_restricted_operator = (
-                user.username in ['sofiane_gaming', 'walid_withdrawal'] or
-                (profile and profile.mission_role in [
+            is_restricted_operator = bool(
+                profile and profile.mission_role in [
                     OperatorMissionRole.GAME_OPERATOR,
                     OperatorMissionRole.FACTURE_OPERATOR,
                     OperatorMissionRole.ESIM_OPERATOR,
                     OperatorMissionRole.TREASURY_OFFICER,
                     OperatorMissionRole.AUDITOR,
-                ])
+                ]
             )
             if is_restricted_operator and 'assignee' not in validated_data:
                 validated_data['assignee'] = user
