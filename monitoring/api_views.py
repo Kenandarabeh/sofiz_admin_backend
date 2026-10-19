@@ -2892,7 +2892,6 @@ class UtilityMonitoringAPIView(APIView):
         utility_wallets = UtilityWallet.objects.filter(is_active=True)
         baridi_accounts = utility_baridi_accounts
         total_utility_dzt = float(utility_wallets.aggregate(total=Sum('dzt_balance'))['total'] or 0)
-        total_eccp_dzd = float(sum((b.eccp_balance_dzd or b.balance_dzd or 0) for b in baridi_accounts))
         total_baridimob_dzd = float(baridi_accounts.aggregate(total=Sum('balance_dzd'))['total'] or 0)
         utility_capital = float(settings.effective_utility_capital)
         utility_expenses = float(UtilityExpenseRecord.objects.aggregate(total=Sum('amount_dzd'))['total'] or 0)
@@ -2903,8 +2902,7 @@ class UtilityMonitoringAPIView(APIView):
         facture_profit_wallet = StellarWallet.objects.filter(family=WalletFamily.FACTURE, role=WalletRole.PROFIT, is_active=True).first()
         facture_withdrawal_wallet = StellarWallet.objects.filter(family=WalletFamily.FACTURE, role=WalletRole.WITHDRAWAL, is_active=True).first()
 
-        # Factures Golden Accounting Rule: Uses ECCP postal solde for reconciliation
-        left_side = round(total_eccp_dzd + total_utility_dzt + utility_expenses, 2)
+        left_side = round(total_baridimob_dzd + total_utility_dzt + utility_expenses, 2)
         right_side = round(utility_capital + total_utility_profit, 2)
         discrepancy = round(left_side - right_side, 2)
         is_balanced = abs(discrepancy) <= 0.05
@@ -2945,7 +2943,6 @@ class UtilityMonitoringAPIView(APIView):
                 'discrepancy_dzd': discrepancy,
                 'left_side': left_side,
                 'right_side': right_side,
-                'total_eccp_dzd': total_eccp_dzd,
                 'total_baridimob_dzd': total_baridimob_dzd,
                 'total_utility_dzt': total_utility_dzt,
                 'total_utility_expenses': utility_expenses,
