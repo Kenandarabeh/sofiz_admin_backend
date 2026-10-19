@@ -2395,6 +2395,8 @@ class GamingMonitoringAPIView(APIView):
     Real-time Gaming Top-Up Financial Monitoring API
     Computes equation: G2Bulk USD/DZD + Gaming DZT + Gaming Expenses vs Gaming Capital + Profits
     """
+    permission_classes = [permissions.AllowAny]
+
     def get(self, request):
         auto_sync = request.query_params.get('sync', 'false').lower() == 'true'
         salah_account = BaridiMobAccount.objects.filter(
@@ -2480,6 +2482,12 @@ class GamingMonitoringAPIView(APIView):
             'success': True,
             'gaming_baridimob_min_threshold_dzd': float(settings.gaming_baridimob_min_threshold_dzd or 10000.0),
             'salah_baridimob_allocation': salah_allocation,
+            'quota': {
+                'current_available_dzd': available_gaming_baridi,
+                'expected_balance_dzd': expected_gaming_baridi,
+                'expected_allocation_dzd': expected_gaming_baridi,
+                'min_threshold_dzd': float(settings.gaming_baridimob_min_threshold_dzd or 10000.0),
+            },
             'equation': {
                 'is_balanced': is_balanced,
                 'discrepancy_dzd': discrepancy,
@@ -3169,6 +3177,12 @@ class eSIMMonitoringAPIView(APIView):
             'timestamp': timezone.now().isoformat(),
             'airalo_min_threshold_usd': float(settings.airalo_min_threshold_usd or 100.0),
             'salah_baridimob_allocation': salah_allocation,
+            'quota': {
+                'current_available_dzd': float(salah_allocation['esim']['available_balance_dzd']),
+                'expected_balance_dzd': float(salah_allocation['esim']['expected_balance_dzd']),
+                'expected_allocation_dzd': float(salah_allocation['esim']['expected_balance_dzd']),
+                'min_threshold_dzd': float(settings.gaming_baridimob_min_threshold_dzd or 10000.0),
+            },
             'equation': {
                 'is_balanced': audit_res['is_balanced'],
                 'discrepancy_dzd': float(audit_res['discrepancy']),
