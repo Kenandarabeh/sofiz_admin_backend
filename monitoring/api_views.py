@@ -1722,10 +1722,19 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
                 is_game_only_operator = False
                 if self.request.user and self.request.user.is_authenticated:
                     user_groups = set(self.request.user.groups.values_list('name', flat=True))
-                    # Only pure game operators lacking withdrawal authorization are flagged
-                    if ('Game Family Operator' in user_groups or self.request.user.username == 'sofiane_gaming') and not (
-                        self.request.user.is_superuser or 'Withdrawal Operations Officer' in user_groups or 'Fintech Treasury Officer' in user_groups
-                    ):
+                    mission_role = getattr(getattr(self.request.user, 'operator_profile', None), 'mission_role', '')
+                    is_withdrawal_auth = (
+                        self.request.user.is_superuser
+                        or 'Withdrawal Operations Officer' in user_groups
+                        or 'Fintech Treasury Officer' in user_groups
+                        or 'Treasury & P2P Officer' in user_groups
+                        or mission_role in ['WITHDRAWAL_OPERATOR', 'TREASURY_OFFICER', 'ALL_FAMILIES', 'DEVELOPER']
+                    )
+                    is_game_role = (
+                        'Game Family Operator' in user_groups
+                        or mission_role in ['GAME_OPERATOR', 'FACTURE_OPERATOR', 'ESIM_OPERATOR']
+                    )
+                    if is_game_role and not is_withdrawal_auth:
                         is_game_only_operator = True
 
                 if is_game_only_operator:
@@ -2998,7 +3007,7 @@ class UtilityMonitoringAPIView(APIView):
                 'message': 'BaridiMob balance has not been refreshed in over 3 minutes.',
             })
 
-        quotas = BalanceEngine.get_walid_withdrawal_quotas()
+        quotas = BalanceEngine.get_post_withdrawal_quotas()
         factures_target_quota = float(quotas.get('factures_target_quota', 0))
 
         return Response({
@@ -3909,10 +3918,10 @@ class UnifiedAccountsMonitoringAPIView(APIView):
         rate = AccountMonitoringService.get_exchange_rate()
 
         from .services.balance_engine import BalanceEngine
-        walid_quotas = BalanceEngine.get_walid_withdrawal_quotas()
-        gaming_target = float(walid_quotas['gaming_target_quota'])
-        esim_target = float(walid_quotas['esim_target_quota'])
-        factures_target = float(walid_quotas['factures_target_quota'])
+        post_quotas = BalanceEngine.get_post_withdrawal_quotas()
+        gaming_target = float(post_quotas['gaming_target_quota'])
+        esim_target = float(post_quotas['esim_target_quota'])
+        factures_target = float(post_quotas['factures_target_quota'])
         salah_allocation = BalanceEngine.get_salah_baridimob_allocation()
 
         # Date & Range Filtering Parameters (supports start_date, end_date, single date, and preset ranges)
@@ -4505,7 +4514,7 @@ class UnifiedAccountsMonitoringAPIView(APIView):
             'gaming': {
                 'id': 'subsystem_gaming',
                 'title': 'Gaming Wholesale Subsystem',
-                'badge': 'G2Bulk + Walid',
+                'badge': 'G2Bulk + Withdrawals',
                 'target_quota_dzd': gaming_target_val,
                 'allocated_balance_dzd': gaming_as_of,
                 'coverage_pct': gaming_cov,

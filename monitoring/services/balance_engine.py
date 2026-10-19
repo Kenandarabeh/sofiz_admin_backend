@@ -347,14 +347,12 @@ class BalanceEngine:
         }
 
     @classmethod
-    def get_operational_withdrawal_quotas(cls) -> dict:
+    def get_post_withdrawal_quotas(cls) -> dict:
         """
-        Dynamically computes the operational quotas based on the withdrawals
-        created and dispatched by the Treasury & Withdrawal Operations Officer.
-        The quotas are NOT fixed ratios, but reflect live withdrawal demand:
-        - Gaming Quota: Amount withdrawn/targeted for Gaming (e.g. 10,000 DZD)
-        - eSIM Quota: Amount withdrawn/targeted for eSIM (e.g. 2,000 DZD)
-        - Factures Quota: Amount withdrawn/targeted for Factures (e.g. 50,000 DZD)
+        Dynamically computes the post withdrawal quotas based on active receipts:
+        - Gaming Quota: Amount targeted for Gaming post withdrawals (e.g. 10,000 DZD)
+        - eSIM Quota: Amount targeted for eSIM post withdrawals (e.g. 2,000 DZD)
+        - Factures Quota: Amount targeted for Factures post withdrawals (e.g. 50,000 DZD)
         """
         from ..models import (
             WithdrawalRecord,
@@ -393,17 +391,27 @@ class BalanceEngine:
         }
 
     @classmethod
+    def get_post_quotas(cls) -> dict:
+        """Alias for get_post_withdrawal_quotas."""
+        return cls.get_post_withdrawal_quotas()
+
+    @classmethod
+    def get_operational_withdrawal_quotas(cls) -> dict:
+        """Alias for get_post_withdrawal_quotas."""
+        return cls.get_post_withdrawal_quotas()
+
+    @classmethod
     def get_walid_withdrawal_quotas(cls) -> dict:
-        """Backward-compatible alias for operational withdrawal quotas."""
-        return cls.get_operational_withdrawal_quotas()
+        """Backward-compatible alias for get_post_withdrawal_quotas."""
+        return cls.get_post_withdrawal_quotas()
 
     @classmethod
     def get_salah_baridimob_allocation(cls) -> dict:
         """
         Computes mathematical breakdown of Salah's shared BaridiMob account
         (RIP: 00799999001738866535) between Gaming and eSIM subsystems:
-        1. Operational withdrawal quota for Gaming (Walid)
-        2. Operational withdrawal quota for eSIM (Walid)
+        1. Operational withdrawal quota for Gaming
+        2. Operational withdrawal quota for eSIM
         3. Real live postal card balance
         4. Real available balance allocated to Gaming vs eSIM
         5. Total reconciliation variance
@@ -431,8 +439,8 @@ class BalanceEngine:
         )
         settings = MonitoringGlobalSettings.get_settings()
 
-        # 1. Operational Quotas derived from active operational withdrawals
-        quotas = cls.get_operational_withdrawal_quotas()
+        # 1. Post Quotas derived from active postal withdrawals
+        quotas = cls.get_post_withdrawal_quotas()
         expected_gaming = quotas['gaming_target_quota']
         expected_esim = quotas['esim_target_quota']
 

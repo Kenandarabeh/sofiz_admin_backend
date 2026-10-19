@@ -168,12 +168,12 @@ class AccountMonitoringService:
         salah_card_sync = salah.last_synced_at if salah else now
         salah_eccp_sync = salah.eccp_last_synced_at if salah else now
 
-        # Operational Quotas derived from Walid's withdrawals and real account balance
+        # Post Quotas derived from active postal withdrawals and real account balance
         from .balance_engine import BalanceEngine
-        walid_quotas = BalanceEngine.get_walid_withdrawal_quotas()
+        post_quotas = BalanceEngine.get_post_withdrawal_quotas()
 
-        game_target_val = walid_quotas['gaming_target_quota']
-        esim_target_val = walid_quotas['esim_target_quota']
+        game_target_val = post_quotas['gaming_target_quota']
+        esim_target_val = post_quotas['esim_target_quota']
         total_target_val = game_target_val + esim_target_val
 
         if salah_card >= total_target_val:
@@ -207,7 +207,7 @@ class AccountMonitoringService:
             causing_tx_desc=latest_salah_tx.description if latest_salah_tx else None,
             causing_tx_amount=latest_salah_tx.amount if latest_salah_tx else None,
             last_synced_at=salah_card_sync,
-            notes=f"BaridiMob Card operational quota (Target: {game_target_val:,.2f} DZD, derived from Walid withdrawals) - Salah Account",
+            notes=f"BaridiMob Card operational quota (Target: {game_target_val:,.2f} DZD, derived from active operational withdrawals) - Salah Account",
         )
 
         # ECCP (Quota Game)
@@ -235,7 +235,7 @@ class AccountMonitoringService:
             current_balance_dzd=esim_card_quota,
             trigger_type=trigger,
             last_synced_at=salah_card_sync,
-            notes=f"BaridiMob Card eSIM quota (Target: {esim_target_val:,.2f} DZD, derived from Walid withdrawals)",
+            notes=f"BaridiMob Card eSIM quota (Target: {esim_target_val:,.2f} DZD, derived from active operational withdrawals)",
         )
 
         # ECCP (Quota eSIM)
@@ -400,10 +400,10 @@ class AccountMonitoringService:
         rate = float(cls.get_exchange_rate())
 
         from .balance_engine import BalanceEngine
-        walid_quotas = BalanceEngine.get_walid_withdrawal_quotas()
-        gaming_target = float(walid_quotas['gaming_target_quota'])
-        esim_target = float(walid_quotas['esim_target_quota'])
-        factures_target = float(walid_quotas['factures_target_quota'])
+        post_quotas = BalanceEngine.get_post_withdrawal_quotas()
+        gaming_target = float(post_quotas['gaming_target_quota'])
+        esim_target = float(post_quotas['esim_target_quota'])
+        factures_target = float(post_quotas['factures_target_quota'])
 
         salah_acc_obj = BaridiMobAccount.objects.filter(id=3).first() or BaridiMobAccount.objects.filter(account_name__icontains='salah').first()
         sihaam_acc_obj = BaridiMobAccount.objects.filter(id=1).first() or BaridiMobAccount.objects.filter(account_name__icontains='sihaam').first()
