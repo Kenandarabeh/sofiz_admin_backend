@@ -118,8 +118,8 @@ class AccountMonitoringService:
         now = timezone.now()
 
         # 1. G2Bulk Wholesale
-        g2 = SupplierAccount.objects.filter(provider="G2Bulk").first()
-        g2_usd = Decimal(str(g2.balance_usd)) if g2 else Decimal("305.57")
+        g2 = SupplierAccount.objects.filter(models.Q(provider__iexact="G2BULK") | models.Q(name__icontains="g2bulk")).first()
+        g2_usd = Decimal(str(g2.balance_usd)) if g2 and g2.balance_usd is not None else Decimal("0.00")
         g2_dzd = (g2_usd * rate).quantize(Decimal("0.01"))
         cls.record_snapshot(
             channel=AccountMonitoringChannel.G2BULK,
@@ -543,6 +543,35 @@ class AccountMonitoringService:
 
             cur_bal_native = float(latest_snap.current_balance)
             cur_bal_dzd = float(latest_snap.current_balance_dzd)
+
+            # Bind real-time current balance directly to live audited account states
+            if chan_key == AccountMonitoringChannel.G2BULK:
+                g2_live = SupplierAccount.objects.filter(models.Q(provider__iexact="G2BULK") | models.Q(name__icontains="g2bulk")).first()
+                if g2_live and g2_live.balance_usd is not None:
+                    cur_bal_native = float(g2_live.balance_usd)
+                    cur_bal_dzd = float(g2_live.balance_dzd_equivalent or round(cur_bal_native * rate, 2))
+            elif chan_key == AccountMonitoringChannel.AIRALO:
+                air_live = AiraloAccount.objects.first()
+                if air_live and air_live.available_balance_usd is not None:
+                    cur_bal_native = float(air_live.available_balance_usd)
+                    cur_bal_dzd = float(air_live.balance_dzd_equivalent or round(cur_bal_native * rate, 2))
+            elif chan_key in [AccountMonitoringChannel.BARIDIMOB_GAME_QUOTA, AccountMonitoringChannel.BARIDIMOB_ESIM_QUOTA]:
+                if salah_acc_obj and salah_acc_obj.balance_dzd is not None:
+                    cur_bal_native = float(salah_acc_obj.balance_dzd)
+                    cur_bal_dzd = cur_bal_native
+            elif chan_key in [AccountMonitoringChannel.ECCP_GAME_QUOTA, AccountMonitoringChannel.ECCP_ESIM_QUOTA]:
+                if salah_acc_obj and salah_acc_obj.eccp_balance_dzd is not None:
+                    cur_bal_native = float(salah_acc_obj.eccp_balance_dzd)
+                    cur_bal_dzd = cur_bal_native
+            elif chan_key == AccountMonitoringChannel.BARIDIMOB_FACTURE:
+                if sihaam_acc_obj and sihaam_acc_obj.balance_dzd is not None:
+                    cur_bal_native = float(sihaam_acc_obj.balance_dzd)
+                    cur_bal_dzd = cur_bal_native
+            elif chan_key == AccountMonitoringChannel.ECCP_FACTURE:
+                if sihaam_acc_obj and sihaam_acc_obj.eccp_balance_dzd is not None:
+                    cur_bal_native = float(sihaam_acc_obj.eccp_balance_dzd)
+                    cur_bal_dzd = cur_bal_native
+
             prev_bal_dzd = float(prior_snap.current_balance_dzd) if prior_snap else float(latest_snap.previous_balance_dzd)
             change_dzd = round(cur_bal_dzd - prev_bal_dzd, 2)
 

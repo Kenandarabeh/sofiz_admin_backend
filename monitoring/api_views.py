@@ -3557,6 +3557,24 @@ class MasterLiquiditySummaryAPIView(APIView):
         from decimal import Decimal
         from django.utils import timezone
 
+        sync_requested = request.query_params.get('sync', '').strip().lower() in ['true', '1', 'yes']
+        if sync_requested:
+            try:
+                from .services.g2bulk_service import G2BulkService
+                G2BulkService.sync_supplier()
+            except Exception as e:
+                logger.warning(f"Could not live-sync G2Bulk during master liquidity sync: {e}")
+            try:
+                from .services.airalo_service import AiraloService
+                AiraloService.sync_account_balance()
+            except Exception as e:
+                logger.warning(f"Could not live-sync Airalo during master liquidity sync: {e}")
+            try:
+                from .services.account_monitoring_service import AccountMonitoringService
+                AccountMonitoringService.capture_live_snapshots(trigger="LIVE_SYNC")
+            except Exception as e:
+                logger.warning(f"Could not capture live snapshots: {e}")
+
         settings = MonitoringGlobalSettings.get_settings()
         usd_rate = float(settings.usd_to_dzd_exchange_rate or Decimal("253.20"))
 
@@ -3586,8 +3604,8 @@ class MasterLiquiditySummaryAPIView(APIView):
             models.Q(name__icontains='g2bulk') | models.Q(provider__icontains='g2bulk'),
             is_active=True
         ).first()
-        g2bulk_usd = float(g2bulk_sup.balance_usd) if (g2bulk_sup and g2bulk_sup.balance_usd and g2bulk_sup.balance_usd > 0) else 305.57
-        g2bulk_dzd = float(g2bulk_sup.balance_dzd_equivalent) if (g2bulk_sup and g2bulk_sup.balance_dzd_equivalent and g2bulk_sup.balance_dzd_equivalent > 0) else round(g2bulk_usd * usd_rate, 2)
+        g2bulk_usd = float(g2bulk_sup.balance_usd) if (g2bulk_sup and g2bulk_sup.balance_usd is not None) else 0.00
+        g2bulk_dzd = float(g2bulk_sup.balance_dzd_equivalent) if (g2bulk_sup and g2bulk_sup.balance_dzd_equivalent is not None) else round(g2bulk_usd * usd_rate, 2)
 
         airalo_acc = AiraloAccount.objects.filter(is_active=True).first()
         airalo_usd = float(airalo_acc.available_balance_usd) if (airalo_acc and airalo_acc.available_balance_usd is not None) else 0.00
