@@ -10,3 +10,11 @@ docker compose up -d --build
 ```
 * لوحة التحكم: `http://localhost:8383`
 * لوحة الإدارة: `http://localhost:8383/admin`
+
+
+
+
+
+
+
+TxUkPty6q2BKAhbrMxTT

@@ -24,6 +24,9 @@ class OperationalFamily(models.TextChoices):
     FACTURE = 'FACTURE', 'Facture Family (Bills & Utilities)'
     ESIM = 'ESIM', 'eSIM Family (eSIM & Telecom)'
     IDOOM = 'IDOOM', 'Idoom Family (Algérie Télécom)'
+    IPTV = 'IPTV', 'IPTV Family (Subscriptions & Vouchers)'
+    FLEXY = 'FLEXY', 'Flexy Family (Telecom Mobilis / Djezzy / Ooredoo)'
+    XLM = 'XLM', 'Stellar XLM Family (Liquidity & Sourcing)'
 
 
 class WalletFamily(models.TextChoices):
@@ -31,7 +34,10 @@ class WalletFamily(models.TextChoices):
     FACTURE = 'FACTURE', 'Facture Family (Bills & Utilities)'
     ESIM = 'ESIM', 'eSIM Family (eSIM & Telecom)'
     IDOOM = 'IDOOM', 'Idoom Family (Algérie Télécom)'
+    IPTV = 'IPTV', 'IPTV Family (Subscriptions & Vouchers)'
+    FLEXY = 'FLEXY', 'Flexy Family (Mobilis, Djezzy, Ooredoo, Profit)'
     TREASURY = 'TREASURY', 'Treasury Family (Central Vaults)'
+    XLM = 'XLM', 'Stellar XLM Family (Liquidity & Sourcing)'
 
 
 class WalletRole(models.TextChoices):
@@ -63,6 +69,8 @@ class SubSystemType(models.TextChoices):
     UTILITY = 'UTILITY', 'Utility Bills Working Capital (BaridiMob)'
     ESIM = 'ESIM', 'eSIM & Telecom Working Capital'
     IDOOM = 'IDOOM', 'Idoom Working Capital & Vouchers'
+    IPTV = 'IPTV', 'IPTV Working Capital & Subscriptions'
+    FLEXY = 'FLEXY', 'Flexy Working Capital & Telecom Operations'
     TREASURY = 'TREASURY', 'Central Treasury Reserve (Stellar DZT)'
     ALL = 'ALL', 'All Sub-Systems (Universal Authorized)'
 
@@ -97,6 +105,9 @@ class WithdrawalPurpose(models.TextChoices):
     AT_SETTLEMENT = 'AT_SETTLEMENT', 'Algérie Télécom Settlement Balance Allocation'
     ESIM_REFILL = 'ESIM_REFILL', 'eSIM & Telecom Balance Refill (Airalo / Telecom Partner)'
     IDOOM_STOCK_REFILL = 'IDOOM_STOCK_REFILL', 'Idoom Vouchers & Inventory Procurement Refill'
+    IPTV_STOCK_REFILL = 'IPTV_STOCK_REFILL', 'IPTV Subscriptions & Inventory Procurement Refill'
+    FLEXY_REFILL = 'FLEXY_REFILL', 'Flexy Wholesale Operational Balance Refill (Shemsnet)'
+    XLM_REFILL = 'XLM_REFILL', 'Stellar XLM Master Vault Liquidity Refill'
     TREASURY_ALLOCATION = 'TREASURY_ALLOCATION', 'Internal Treasury Liquidity Allocation'
     OWNER_DIVIDEND = 'OWNER_DIVIDEND', 'Owner Capital & Profit Dividend'
     OTHER = 'OTHER', 'Other Confined Outflow'
@@ -115,6 +126,9 @@ class WithdrawalPurpose(models.TextChoices):
             cls.AT_SETTLEMENT: "Batch settlement allocation for Internet ADSL/Fibre and fixed telephone bills via Algérie Télécom portal.",
             cls.ESIM_REFILL: "Replenishing operational funds for Airalo eSIM data packages procurement and international roaming distribution.",
             cls.IDOOM_STOCK_REFILL: "Procurement replenishment of Idoom ADSL/Fibre/4G LTE vouchers and allocation to Big Wallet with profit segregation.",
+            cls.IPTV_STOCK_REFILL: "Procurement replenishment of IPTV server subscription vouchers and allocation to Big Wallet with profit segregation.",
+            cls.FLEXY_REFILL: "Procurement replenishment of Flexy telecom operational balance on Shemsnet with tranche audit and profit segregation.",
+            cls.XLM_REFILL: "Acquiring USDT via BaridiMob P2P on Binance, converting to XLM, and executing on-chain blockchain withdrawal to Big Central Treasury Vault.",
             cls.TREASURY_ALLOCATION: "Internal treasury capital transfer to replenish operational gaming vaults and collection pools.",
             cls.OWNER_DIVIDEND: "Audited distribution of verified business profits and dividends to institutional owner bank accounts.",
             cls.OTHER: "Documented institutional fund outflow with verified audit rationale.",
@@ -143,6 +157,7 @@ class ExpenseCategory(models.TextChoices):
     EXCHANGE_LOSS = 'EXCHANGE_LOSS', 'Currency Exchange & Conversion Loss'
     REVERSAL_REFUND = 'REVERSAL_REFUND', 'Customer Refunds & Reversals'
     OPERATIONAL = 'OPERATIONAL', 'General Operational Expenses'
+    OTHER = 'OTHER', 'Other (Custom Operational Expense)'
 
 
 class UtilityServiceType(models.TextChoices):
@@ -566,6 +581,7 @@ class StellarWallet(models.Model):
     public_address = models.CharField(max_length=100, unique=True, db_index=True, verbose_name="Stellar Public Address (G...)")
     secret_seed = EncryptedCharField(max_length=500, blank=True, null=True, verbose_name="Stellar Secret Seed (S...)")
     dzt_balance = models.DecimalField(max_digits=18, decimal_places=4, default=Decimal("0.0000"), verbose_name="Live DZT Balance")
+    native_xlm_balance = models.DecimalField(max_digits=18, decimal_places=7, default=Decimal("0.0000000"), verbose_name="Live Native XLM Balance")
     is_active = models.BooleanField(default=True, db_index=True, verbose_name="Is Active")
     last_synced_at = models.DateTimeField(null=True, blank=True, verbose_name="Last Synced At")
     last_error = models.TextField(null=True, blank=True, verbose_name="Last Sync Error")
@@ -652,7 +668,7 @@ class StellarWallet(models.Model):
             self.category = WalletCategory.GAMING
         elif self.family in [WalletFamily.FACTURE, WalletFamily.ESIM]:
             self.category = WalletCategory.UTILITY
-        elif self.family == WalletFamily.TREASURY:
+        elif self.family in [WalletFamily.TREASURY, WalletFamily.XLM]:
             self.category = WalletCategory.TREASURY
         super().save(*args, **kwargs)
 
@@ -2357,3 +2373,232 @@ class IdoomRefundRecord(models.Model):
 
     def __str__(self):
         return f"[Idoom Refund #{self.refund_reference}] TID: {self.epay_transaction_id} | Amount: {self.denomination_dzd:,.2f} DZD"
+
+
+# ==============================================================================
+# 12. IPTV BATCH REFILL & REFUND MODELS
+# ==============================================================================
+
+class IPTVBatchRefill(models.Model):
+    """
+    Audited record for IPTV subscription card/voucher replenishment batches uploaded by Treasury Officer (Walid).
+    Calculates total procurement cost, face value, and segregated profit.
+    """
+    batch_reference = models.CharField(max_length=64, unique=True, db_index=True, verbose_name="Batch Reference")
+    total_cards_count = models.PositiveIntegerField(default=0, verbose_name="Total Cards Count")
+    total_face_value_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Total Face Value (DZD)")
+    total_cost_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Procurement Cost (DZD)")
+    expected_profit_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Expected Profit (DZD)")
+    breakdown_json = models.JSONField(default=dict, blank=True, verbose_name="Denominations Breakdown")
+    uploaded_file_name = models.CharField(max_length=255, blank=True, null=True, verbose_name="Uploaded File Name")
+    executed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, verbose_name="Executed By")
+    withdrawal_record = models.ForeignKey('WithdrawalRecord', on_delete=models.SET_NULL, null=True, blank=True, verbose_name="Linked Withdrawal Outflow")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True, verbose_name="Batch Creation Timestamp")
+
+    class Meta:
+        verbose_name = "IPTV Batch Refill Record"
+        verbose_name_plural = "IPTV Batch Refill Records"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"[IPTV Refill #{self.batch_reference}] {self.total_cards_count} cards | Cost: {self.total_cost_dzd:,.2f} DZD | Profit: {self.expected_profit_dzd:,.2f} DZD"
+
+
+class IPTVRefundRecord(models.Model):
+    """
+    Audited record for defective/failed IPTV subscription cards/codes.
+    Handles reversal refund to client and rollbacks phantom profit from profit reserve.
+    """
+    refund_reference = models.CharField(max_length=64, unique=True, db_index=True, verbose_name="Refund Reference")
+    epay_transaction_id = models.CharField(max_length=100, db_index=True, verbose_name="Epay Transaction ID")
+    client_phone_or_account = models.CharField(max_length=64, blank=True, verbose_name="Customer Account / Phone")
+    denomination_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Refunded Amount (DZD)")
+    reversed_profit_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Reversed Profit (DZD)")
+    reason = models.CharField(max_length=255, default="FAILED_DEFECTIVE_CARD", verbose_name="Refund Rationale")
+    executed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, verbose_name="Executed By")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True, verbose_name="Refund Timestamp")
+
+    class Meta:
+        verbose_name = "IPTV Defective Card Refund"
+        verbose_name_plural = "IPTV Defective Card Refunds"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"[IPTV Refund #{self.refund_reference}] TID: {self.epay_transaction_id} | Amount: {self.denomination_dzd:,.2f} DZD"
+
+
+# ==============================================================================
+# 13. FLEXY TELECOM SUBSYSTEM (MOBILIS, DJEZZY, OOREDOO) MODELS
+# ==============================================================================
+
+class FlexyFundingTranche(models.Model):
+    """
+    Audited record for Flexy operational liquidity tranches refilled by Treasury Officer (Walid).
+    Implements FIFO consumption queue ensuring mathematical segregation of bonuses across batch boundaries.
+    """
+    tranche_reference = models.CharField(max_length=64, unique=True, db_index=True, verbose_name="Tranche Reference")
+    initial_amount_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Initial Funded Amount (DZD)")
+    remaining_balance_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Remaining Balance (DZD)")
+    
+    bonus_mobilis_pct = models.DecimalField(max_digits=7, decimal_places=4, default=Decimal("2.5000"), verbose_name="Mobilis Regular Bonus (%)")
+    bonus_pixx_pct = models.DecimalField(max_digits=7, decimal_places=4, default=Decimal("5.0000"), verbose_name="Mobilis Pixx Bonus (%)")
+    bonus_djezzy_pct = models.DecimalField(max_digits=7, decimal_places=4, default=Decimal("0.5000"), verbose_name="Djezzy Bonus (%)")
+    bonus_ooredoo_pct = models.DecimalField(max_digits=7, decimal_places=4, default=Decimal("1.0000"), verbose_name="Ooredoo Bonus (%)")
+    
+    shemsnet_tx_id = models.CharField(max_length=64, blank=True, null=True, verbose_name="Shemsnet Topup Transaction ID")
+    stellar_tx_hash = models.CharField(max_length=128, blank=True, null=True, verbose_name="Stellar Horizon Transaction Hash")
+    source_wallet = models.ForeignKey('StellarWallet', on_delete=models.SET_NULL, null=True, blank=True, verbose_name="Funding Source Wallet")
+    withdrawal_record = models.ForeignKey('WithdrawalRecord', on_delete=models.SET_NULL, null=True, blank=True, verbose_name="Linked Withdrawal Outflow")
+    executed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, verbose_name="Executed By")
+    
+    is_active = models.BooleanField(default=True, db_index=True, verbose_name="Is Active for Consumption")
+    notes = models.TextField(blank=True, verbose_name="Tranche Audit Notes")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True, verbose_name="Tranche Creation Timestamp")
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="Last Update Timestamp")
+
+    class Meta:
+        verbose_name = "Flexy Funding Tranche"
+        verbose_name_plural = "Flexy Funding Tranches"
+        ordering = ["created_at"]
+
+    def __str__(self):
+        return f"[Flexy Tranche #{self.tranche_reference}] Rem: {self.remaining_balance_dzd:,.2f} / {self.initial_amount_dzd:,.2f} DZD"
+
+
+class FlexyOperationRecord(models.Model):
+    """
+    Audited operational transaction record for live Flexy sales across Algerian telecom operators.
+    Calculates zero-leakage cost and profit segregation per transaction.
+    """
+    operation_reference = models.CharField(max_length=64, unique=True, db_index=True, verbose_name="Operation Reference")
+    shemsnet_op_id = models.CharField(max_length=64, blank=True, null=True, db_index=True, verbose_name="Shemsnet Operation ID")
+    operator = models.CharField(max_length=32, db_index=True, verbose_name="Telecom Operator (MOBILIS, PIXX, DJEZZY, OOREDOO)")
+    phone_number = models.CharField(max_length=32, db_index=True, verbose_name="Recipient Phone Number")
+    
+    face_amount_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Face Value Amount (DZD)")
+    procurement_cost_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Procurement Cost (DZD)")
+    net_profit_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Net Profit (DZD)")
+    applied_bonus_pct = models.DecimalField(max_digits=7, decimal_places=4, default=Decimal("0.0000"), verbose_name="Applied Bonus Rate (%)")
+    
+    tranche = models.ForeignKey(FlexyFundingTranche, on_delete=models.SET_NULL, null=True, blank=True, related_name="operations", verbose_name="Funding Tranche")
+    is_swept = models.BooleanField(default=False, db_index=True, verbose_name="Is Swept to Vaults")
+    sweep_batch = models.ForeignKey('FlexyDualSweepBatch', on_delete=models.SET_NULL, null=True, blank=True, related_name="operations", verbose_name="Associated Dual-Sweep Batch")
+    
+    status = models.CharField(max_length=32, default="SUCCESS", verbose_name="Operation Status")
+    raw_response = models.JSONField(default=dict, blank=True, verbose_name="Raw Provider Response")
+    created_at = models.DateTimeField(db_index=True, verbose_name="Operation Timestamp")
+
+    class Meta:
+        verbose_name = "Flexy Operation Record"
+        verbose_name_plural = "Flexy Operation Records"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"[Flexy Op #{self.operation_reference}] {self.operator} {self.phone_number}: {self.face_amount_dzd:,.2f} DZD (Profit: {self.net_profit_dzd:,.2f} DZD)"
+
+
+class FlexyDualSweepBatch(models.Model):
+    """
+    Audited record for on-chain Stellar Dual-Sweep batches.
+    Sweeps procurement capital to Central Treasury Vault and net profits to dedicated Flexy Profit Vault.
+    """
+    batch_reference = models.CharField(max_length=64, unique=True, db_index=True, verbose_name="Batch Reference")
+    operator = models.CharField(max_length=32, verbose_name="Telecom Operator")
+    
+    total_volume_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Total Swept Volume (DZD / DZT)")
+    total_capital_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Swept Capital to Collection (DZD / DZT)")
+    total_profit_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Swept Profit to Vault (DZD / DZT)")
+    
+    source_wallet = models.ForeignKey('StellarWallet', on_delete=models.SET_NULL, null=True, blank=True, related_name="flexy_source_sweeps", verbose_name="Source Operator Stellar Wallet")
+    collection_wallet = models.ForeignKey('StellarWallet', on_delete=models.SET_NULL, null=True, blank=True, related_name="flexy_collection_sweeps", verbose_name="Collection Treasury Wallet")
+    profit_wallet = models.ForeignKey('StellarWallet', on_delete=models.SET_NULL, null=True, blank=True, related_name="flexy_profit_sweeps", verbose_name="Flexy Profit Vault")
+    
+    collection_tx_hash = models.CharField(max_length=128, blank=True, null=True, verbose_name="Collection Sweep Stellar Tx Hash")
+    profit_tx_hash = models.CharField(max_length=128, blank=True, null=True, verbose_name="Profit Sweep Stellar Tx Hash")
+    
+    executed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, verbose_name="Executed By")
+    status = models.CharField(max_length=32, default="COMPLETED", verbose_name="Sweep Batch Status")
+    notes = models.TextField(blank=True, verbose_name="Audit Notes")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True, verbose_name="Sweep Timestamp")
+
+    class Meta:
+        verbose_name = "Flexy Dual Sweep Batch"
+        verbose_name_plural = "Flexy Dual Sweep Batches"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"[Flexy Sweep #{self.batch_reference}] {self.operator} Volume: {self.total_volume_dzd:,.2f} DZT | Capital: {self.total_capital_dzd:,.2f} | Profit: {self.total_profit_dzd:,.2f}"
+
+
+class XLMFundingStage(models.TextChoices):
+    STAGE_1_BARIDIMOB = 'STAGE_1_BARIDIMOB', '1. BaridiMob Dispatched & P2P Order'
+    STAGE_2_CONVERT = 'STAGE_2_CONVERT', '2. USDT Converted to XLM'
+    STAGE_3_WITHDRAW = 'STAGE_3_WITHDRAW', '3. XLM Withdrawn to Master Vault'
+    STAGE_4_COMPLETED = 'STAGE_4_COMPLETED', '4. Verified On-Chain & Closed'
+    CANCELLED = 'CANCELLED', 'Cancelled'
+
+
+class XLMLiquidityFundingRecord(models.Model):
+    """
+    Zero-discrepancy procurement pipeline for native XLM liquidity funding.
+    Acquires USDT via BaridiMob P2P on Binance, converts to XLM, and withdrawals
+    on-chain to Big Central Treasury Vault (GBYCZO2R2QPLJ4DD2YMYSWSGTOVSFTHI3H22KZVK6DSHENLAJ5MBW4TY).
+    Direct blockchain verification on Stellar Horizon drives Stage 4 completion.
+    """
+    cycle_reference = models.CharField(max_length=64, unique=True, db_index=True, verbose_name="Cycle Reference")
+    amount_dzd = models.DecimalField(max_digits=18, decimal_places=2, verbose_name="Funding Amount (DZD)")
+
+    # Stage 1: BaridiMob Dispatch & P2P
+    receipt_reference = models.CharField(max_length=120, verbose_name="BaridiMob Receipt Reference")
+    receipt_file = models.FileField(upload_to='receipts/xlm/', null=True, blank=True, verbose_name="BaridiMob Receipt Scan")
+    receipt_verified = models.BooleanField(default=False, verbose_name="Receipt Statement Verified")
+    p2p_order_id = models.CharField(max_length=100, blank=True, null=True, verbose_name="Binance P2P Order Number")
+    p2p_platform = models.CharField(max_length=50, default='BINANCE', verbose_name="P2P Platform")
+    usdt_acquired = models.DecimalField(max_digits=18, decimal_places=4, null=True, blank=True, verbose_name="Acquired USDT Amount")
+    p2p_rate_dzd = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True, verbose_name="P2P Rate (DZD/USDT)")
+
+    # Stage 2: Conversion to XLM
+    xlm_acquired = models.DecimalField(max_digits=18, decimal_places=7, null=True, blank=True, verbose_name="Acquired XLM Amount")
+    convert_rate_usdt = models.DecimalField(max_digits=18, decimal_places=7, null=True, blank=True, verbose_name="Conversion Price (USDT per XLM)")
+    convert_fee_usdt = models.DecimalField(max_digits=12, decimal_places=4, default=Decimal('0.0000'), verbose_name="Conversion Fee")
+
+    # Stage 3: On-Chain Blockchain Withdrawal
+    stellar_destination_address = models.CharField(
+        max_length=100,
+        default="GBYCZO2R2QPLJ4DD2YMYSWSGTOVSFTHI3H22KZVK6DSHENLAJ5MBW4TY",
+        verbose_name="Destination Stellar Vault Address"
+    )
+    binance_withdrawal_id = models.CharField(max_length=100, blank=True, null=True, verbose_name="Binance Withdrawal ID")
+    stellar_tx_hash = models.CharField(max_length=128, blank=True, null=True, db_index=True, verbose_name="Stellar Blockchain Tx Hash")
+    network_fee_xlm = models.DecimalField(max_digits=12, decimal_places=7, default=Decimal('0.0000000'), verbose_name="Withdrawal Fee (XLM)")
+    stellar_net_xlm_sent = models.DecimalField(max_digits=18, decimal_places=7, null=True, blank=True, verbose_name="Net XLM Sent")
+
+    # Stage 4: On-Chain Verification & Settlement
+    stage = models.CharField(
+        max_length=40,
+        choices=XLMFundingStage.choices,
+        default=XLMFundingStage.STAGE_1_BARIDIMOB,
+        db_index=True,
+        verbose_name="Workflow Stage"
+    )
+    on_chain_verified = models.BooleanField(default=False, db_index=True, verbose_name="Horizon On-Chain Confirmed")
+    on_chain_verified_at = models.DateTimeField(null=True, blank=True, verbose_name="Blockchain Verified Timestamp")
+    stellar_ledger_sequence = models.BigIntegerField(null=True, blank=True, verbose_name="Stellar Ledger Sequence")
+    vault_balance_after_xlm = models.DecimalField(max_digits=18, decimal_places=7, null=True, blank=True, verbose_name="Vault XLM Balance After Refill")
+
+    # Audit & Tracking
+    executed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, verbose_name="Executing Officer")
+    notes = models.TextField(blank=True, default='', verbose_name="Audit & Compliance Notes")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True, verbose_name="Creation Timestamp")
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="Last Updated Timestamp")
+
+    class Meta:
+        verbose_name = "XLM Liquidity Funding Cycle"
+        verbose_name_plural = "XLM Liquidity Funding Cycles"
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"[XLM Cycle #{self.cycle_reference}] {self.amount_dzd:,.2f} DZD -> Stage: {self.stage} (XLM: {self.xlm_acquired or 0:,.4f})"
+
+
+

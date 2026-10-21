@@ -2016,3 +2016,49 @@ class IdoomRefundRecordAdmin(InstitutionalAuditAdminMixin, admin.ModelAdmin):
         return format_html('<span style="font-family: monospace; font-weight: bold; color: #e11d48;">-{:,.2f} DZD</span>', val)
     formatted_reversed_profit.short_description = "Reversed Profit"
 
+
+from .models import XLMLiquidityFundingRecord
+
+@admin.register(XLMLiquidityFundingRecord)
+class XLMLiquidityFundingRecordAdmin(InstitutionalAuditAdminMixin, admin.ModelAdmin):
+    list_display = (
+        'cycle_reference',
+        'stage_badge',
+        'formatted_amount',
+        'receipt_reference',
+        'usdt_acquired',
+        'xlm_acquired',
+        'on_chain_badge',
+        'created_at',
+    )
+    list_filter = ('stage', 'on_chain_verified', 'created_at')
+    search_fields = ('cycle_reference', 'receipt_reference', 'p2p_order_id', 'stellar_tx_hash')
+    readonly_fields = ('created_at', 'updated_at', 'on_chain_verified_at')
+
+    def stage_badge(self, obj):
+        colors = {
+            'STAGE_1_BARIDIMOB': ('#1e3a8a', '#93c5fd', '1. P2P Order'),
+            'STAGE_2_CONVERT': ('#78350f', '#fde047', '2. USDT->XLM'),
+            'STAGE_3_WITHDRAW': ('#4c1d95', '#c4b5fd', '3. Withdrawing'),
+            'STAGE_4_COMPLETED': ('#14532d', '#86efac', '4. Completed'),
+            'CANCELLED': ('#7f1d1d', '#fca5a5', 'Cancelled'),
+        }
+        bg, text, label = colors.get(obj.stage, ('#334155', '#ffffff', obj.stage))
+        return format_html(
+            '<span style="background: {}; color: {}; font-weight: bold; padding: 3px 8px; border-radius: 6px; font-size: 11px;">{}</span>',
+            bg, text, label
+        )
+    stage_badge.short_description = "Stage"
+
+    def on_chain_badge(self, obj):
+        if obj.on_chain_verified:
+            return format_html('<span style="color: #16a34a; font-weight: bold;">✓ Confirmed Ledger #{}</span>', obj.stellar_ledger_sequence or 'Live')
+        return format_html('<span style="color: #94a3b8;">Pending Blockchain</span>')
+    on_chain_badge.short_description = "Horizon Consensus"
+
+    def formatted_amount(self, obj):
+        val = obj.amount_dzd or Decimal("0.00")
+        return format_html('<span style="font-family: monospace; font-weight: bold; color: #0284c7;">{:,.2f} DZD</span>', val)
+    formatted_amount.short_description = "DZD Outflow"
+
+

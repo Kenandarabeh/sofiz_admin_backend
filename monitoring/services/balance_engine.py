@@ -469,6 +469,240 @@ class BalanceEngine:
         }
 
     @classmethod
+    def run_iptv_audit(cls, sync_live: bool = True) -> dict:
+        """
+        Executes dedicated audit check for isolated IPTV (Subscriptions & Vouchers) Subsystem:
+        Assets:
+        - Operational Wallet (Epay live cash balance)
+        - Available Subscriptions Inventory Value (from Epay stock breakdown)
+        - IPTV Stellar Collection Wallet (DZT)
+        - IPTV Profit Account (Segregated net profit wallet / account)
+        - IPTV Operational Expenses (DZD)
+        - In-Transit Refills (DZD)
+        Capital & Profits:
+        - IPTV Initial Working Capital (DZD)
+        - Total IPTV Net Profits (from Epay sales summary)
+        Equation:
+        Left Side = Operational Wallet + Subscriptions Inventory Value + Collection DZT + Profit Account + Expenses + In-Transit
+        Right Side = IPTV Capital + Total Net Profits
+        Discrepancy = Left Side - Right Side
+        """
+        from ..models import (
+            StellarWallet,
+            ExpenseRecord,
+            CapitalEntry,
+            MonitoringGlobalSettings,
+            WalletFamily,
+            WalletRole,
+            OperationalFamily,
+            AuditStatus,
+            IPTVBatchRefill,
+            IPTVRefundRecord,
+            AccountWorkingCapital,
+        )
+        from .epay_service import EpaySyncService
+        from .stellar_service import StellarService
+
+        sync_reports = {"wallet": None, "stock": None, "financial_summary": None, "transactions": None}
+
+        # 1. Fetch live Epay data
+        wallet_data = EpaySyncService.sync_iptv_wallet()
+        stock_data = EpaySyncService.sync_iptv_stock()
+        financial_summary = EpaySyncService.sync_iptv_financial_summary()
+        tx_data = EpaySyncService.sync_iptv_transactions(limit=10)
+
+        sync_reports["wallet"] = wallet_data
+        sync_reports["stock"] = stock_data
+        sync_reports["financial_summary"] = financial_summary
+        sync_reports["transactions"] = tx_data
+
+        operational_wallet_dzd = Decimal(str(wallet_data.get("balance_dzd") or 0.00)).quantize(Decimal("0.01"))
+        stock_inventory_dzd = Decimal(str(stock_data.get("total_available_value_dzd") or stock_data.get("total_inventory_value_dzd") or 0.00)).quantize(Decimal("0.01"))
+
+        # 2. IPTV Stellar Collection Wallet (DZT)
+        iptv_collection_wallets = StellarWallet.objects.filter(
+            is_active=True,
+            family=WalletFamily.IPTV,
+            role=WalletRole.COLLECTION
+        )
+        for icw in iptv_collection_wallets:
+            try:
+                StellarService.sync_wallet(icw)
+            except Exception as e:
+                logger.warning(f"Failed to sync IPTV collection wallet {icw.name}: {e}")
+        iptv_collection_dzt = iptv_collection_wallets.aggregate(total=Sum('dzt_balance'))['total'] or Decimal("0.00")
+
+        # 3. IPTV Profit Reserve Wallet / Account
+        iptv_profit_wallets = StellarWallet.objects.filter(
+            is_active=True,
+            family=WalletFamily.IPTV,
+            role=WalletRole.PROFIT
+        )
+        iptv_profit_dzd = iptv_profit_wallets.aggregate(total=Sum('dzt_balance'))['total'] or Decimal("0.00")
+
+        # 4. IPTV Operational Expenses
+        iptv_expenses = ExpenseRecord.objects.filter(
+            system_type=OperationalFamily.IPTV
+        ).aggregate(total=Sum('amount_dzd'))['total'] or Decimal("0.00")
+
+        # 5. In-transit refills (if any pending)
+        in_transit_dzd = Decimal("0.00")
+
+        # Left Side Total (Assets + On-Chain DZT + Stock + Profits Reserve + Expenses)
+        left_side = (operational_wallet_dzd + stock_inventory_dzd + iptv_collection_dzt + iptv_profit_dzd + iptv_expenses + in_transit_dzd).quantize(Decimal("0.01"))
+
+        # 6. Right Side: IPTV Working Capital + Total Net Profits
+        working_capital_obj = AccountWorkingCapital.objects.filter(family=OperationalFamily.IPTV).first()
+        iptv_capital = working_capital_obj.capital_amount_dzd if working_capital_obj else Decimal("0.00")
+        if iptv_capital <= 0:
+            iptv_capital = CapitalEntry.objects.filter(
+                destination_wallet__family=WalletFamily.IPTV
+            ).aggregate(total=Sum('amount_dzd'))['total'] or Decimal("0.00")
+
+        iptv_net_profit_dzd = Decimal(str(financial_summary.get("net_profit_dzd") or 0.00)).quantize(Decimal("0.01"))
+
+        right_side = (iptv_capital + iptv_net_profit_dzd).quantize(Decimal("0.01"))
+
+        discrepancy = (left_side - right_side).quantize(Decimal("0.01"))
+        is_balanced = abs(discrepancy) < Decimal("1.00")
+        status = AuditStatus.BALANCED if is_balanced else AuditStatus.DISCREPANCY_DETECTED
+
+        has_in_flight = tx_data.get("has_in_flight_processing", False)
+
+        return {
+            "timestamp": timezone.now(),
+            "status": status,
+            "is_balanced": is_balanced,
+            "discrepancy": discrepancy,
+            "operational_wallet_dzd": operational_wallet_dzd,
+            "stock_inventory_dzd": stock_inventory_dzd,
+            "iptv_collection_dzt": iptv_collection_dzt,
+            "iptv_profit_dzd": iptv_profit_dzd,
+            "iptv_expenses_dzd": iptv_expenses,
+            "in_transit_dzd": in_transit_dzd,
+            "left_side_total": left_side,
+            "iptv_capital": iptv_capital,
+            "iptv_net_profit_dzd": iptv_net_profit_dzd,
+            "right_side_total": right_side,
+            "has_in_flight_processing": has_in_flight,
+            "sync_reports": sync_reports,
+        }
+
+    @classmethod
+    def run_flexy_audit(cls, sync_live: bool = True) -> dict:
+        """
+        Executes dedicated Golden Balance audit for isolated Flexy (Telecom Mobilis / Djezzy / Ooredoo) Subsystem:
+        Left Side = Shemsnet Operational Cash + Operator Stellar Wallets (DZT) + Profit Vault + Expenses
+        Right Side = Flexy Working Capital + Accrued Net Profits
+        Zero-Discrepancy Invariant: Left Side == Right Side
+        """
+        from ..models import (
+            StellarWallet,
+            WalletFamily,
+            WalletRole,
+            ExpenseRecord,
+            CapitalEntry,
+            OperationalFamily,
+            AccountWorkingCapital,
+            AuditStatus,
+            FlexyFundingTranche,
+            FlexyOperationRecord,
+        )
+        from .shemsnet_service import ShemsnetService
+        from .stellar_service import StellarService
+
+        # 1. Fetch live Shemsnet balance
+        shemsnet_status = {}
+        try:
+            if sync_live:
+                shemsnet_status = ShemsnetService.get_live_user_status()
+                operational_balance_dzd = Decimal(str(shemsnet_status.get("operational_balance_dzd", 0.0))).quantize(Decimal("0.01"))
+            else:
+                operational_balance_dzd = Decimal("0.00")
+        except Exception as e:
+            logger.warning(f"Could not sync live Shemsnet user status in balance engine: {e}")
+            operational_balance_dzd = Decimal("0.00")
+
+        # 2. Dedicated Flexy Withdrawal Wallet (Revolving Operational Working Capital)
+        flexy_withdrawal_wallets = StellarWallet.objects.filter(
+            is_active=True,
+            family=WalletFamily.FLEXY,
+            role=WalletRole.WITHDRAWAL
+        )
+        for fww in flexy_withdrawal_wallets:
+            try:
+                StellarService.sync_wallet(fww)
+            except Exception as e:
+                logger.warning(f"Failed to sync Flexy withdrawal wallet {fww.name}: {e}")
+        flexy_withdrawal_dzt = flexy_withdrawal_wallets.aggregate(total=Sum('dzt_balance'))['total'] or Decimal("0.00")
+
+        # 3. Operator Stellar Collection Wallets (Mobilis, Djezzy, Ooredoo)
+        flexy_collection_wallets = StellarWallet.objects.filter(
+            is_active=True,
+            family=WalletFamily.FLEXY,
+            role=WalletRole.COLLECTION
+        )
+        for fcw in flexy_collection_wallets:
+            try:
+                StellarService.sync_wallet(fcw)
+            except Exception as e:
+                logger.warning(f"Failed to sync Flexy collection wallet {fcw.name}: {e}")
+        flexy_collection_dzt = flexy_collection_wallets.aggregate(total=Sum('dzt_balance'))['total'] or Decimal("0.00")
+
+        # 4. Dedicated Flexy Profit Vault
+        flexy_profit_wallets = StellarWallet.objects.filter(
+            is_active=True,
+            family=WalletFamily.FLEXY,
+            role=WalletRole.PROFIT
+        )
+        flexy_profit_dzt = flexy_profit_wallets.aggregate(total=Sum('dzt_balance'))['total'] or Decimal("0.00")
+
+        # 5. Flexy Operational Expenses
+        flexy_expenses = ExpenseRecord.objects.filter(
+            system_type=OperationalFamily.FLEXY
+        ).aggregate(total=Sum('amount_dzd'))['total'] or Decimal("0.00")
+
+        # Left Side Total (Assets + Cash + DZT In Circulation)
+        # Left Side = Shemsnet Cash + Flexy Withdrawal DZT + Operator Collections DZT + Profit Vault DZT + Expenses
+        left_side = (operational_balance_dzd + flexy_withdrawal_dzt + flexy_collection_dzt + flexy_profit_dzt + flexy_expenses).quantize(Decimal("0.01"))
+
+        # 5. Right Side: Working Capital + Total Net Profits
+        working_capital_obj = AccountWorkingCapital.objects.filter(family=OperationalFamily.FLEXY).first()
+        flexy_capital = working_capital_obj.capital_amount_dzd if working_capital_obj else Decimal("0.00")
+        if flexy_capital <= 0:
+            flexy_capital = CapitalEntry.objects.filter(
+                destination_wallet__family=WalletFamily.FLEXY
+            ).aggregate(total=Sum('amount_dzd'))['total'] or Decimal("0.00")
+
+        # Accrued Net Profit from Flexy sales
+        flexy_net_profit_dzd = FlexyOperationRecord.objects.filter(
+            status='SUCCESS'
+        ).aggregate(total=Sum('net_profit_dzd'))['total'] or Decimal("0.00")
+
+        right_side = (flexy_capital + flexy_net_profit_dzd).quantize(Decimal("0.01"))
+
+        discrepancy = (left_side - right_side).quantize(Decimal("0.01"))
+        is_balanced = abs(discrepancy) < Decimal("1.00")
+        status = AuditStatus.BALANCED if is_balanced else AuditStatus.DISCREPANCY_DETECTED
+
+        return {
+            "timestamp": timezone.now(),
+            "status": status,
+            "is_balanced": is_balanced,
+            "discrepancy": discrepancy,
+            "operational_balance_dzd": operational_balance_dzd,
+            "flexy_withdrawal_dzt": flexy_withdrawal_dzt,
+            "flexy_collection_dzt": flexy_collection_dzt,
+            "flexy_profit_dzt": flexy_profit_dzt,
+            "flexy_expenses_dzd": flexy_expenses,
+            "left_side_total": left_side,
+            "flexy_capital": flexy_capital,
+            "flexy_net_profit_dzd": flexy_net_profit_dzd,
+            "right_side_total": right_side,
+            "shemsnet_status": shemsnet_status,
+        }
+
+    @classmethod
     def get_post_withdrawal_quotas(cls) -> dict:
         """
         Dynamically computes the post withdrawal quotas based on active receipts:
@@ -506,10 +740,27 @@ class BalanceEngine:
             stage__in=[WithdrawalStage.ALLOCATED, WithdrawalStage.BINANCE_P2P]
         ).aggregate(t=Sum('amount_dzd'))['t'] or Decimal('0.00')
 
+        # 4. XLM withdrawal demand from active receipts and low reserve safety baseline
+        from ..models import XLMLiquidityFundingRecord, XLMFundingStage, WithdrawalPurpose
+        active_xlm_f = XLMLiquidityFundingRecord.objects.filter(
+            stage__in=[
+                XLMFundingStage.STAGE_1_BARIDIMOB,
+                XLMFundingStage.STAGE_2_CONVERT,
+                XLMFundingStage.STAGE_3_WITHDRAW
+            ]
+        ).aggregate(t=Sum('amount_dzd'))['t'] or Decimal('0.00')
+        active_xlm_w = WithdrawalRecord.objects.filter(
+            purpose_code=WithdrawalPurpose.XLM_REFILL,
+            stage__in=[WithdrawalStage.ALLOCATED, WithdrawalStage.BINANCE_P2P]
+        ).aggregate(t=Sum('amount_dzd'))['t'] or Decimal('0.00')
+        # Pure ledger demand: active XLM funding records + active XLM postal withdrawal records
+        active_xlm = active_xlm_f + active_xlm_w
+
         return {
             'gaming_target_quota': active_gaming.quantize(Decimal('0.01')),
             'esim_target_quota': active_esim.quantize(Decimal('0.01')),
             'factures_target_quota': active_factures.quantize(Decimal('0.01')),
+            'xlm_target_quota': active_xlm.quantize(Decimal('0.01')),
         }
 
     @classmethod
@@ -531,12 +782,12 @@ class BalanceEngine:
     def get_salah_baridimob_allocation(cls) -> dict:
         """
         Computes mathematical breakdown of Salah's shared BaridiMob account
-        (RIP: 00799999001738866535) between Gaming and eSIM subsystems:
+        (RIP: 00799999001738866535) between Gaming, eSIM, and XLM subsystems:
         1. Operational withdrawal quota for Gaming
         2. Operational withdrawal quota for eSIM
-        3. Real live postal card balance
-        4. Real available balance allocated to Gaming vs eSIM
-        5. Total reconciliation variance
+        3. Operational procurement quota for XLM Reserve
+        4. Real live postal ECCP and BaridiMob card balances
+        5. Available allocated funds across the 3 quotas
         """
         from ..models import (
             BaridiMobAccount,
@@ -565,6 +816,7 @@ class BalanceEngine:
         quotas = cls.get_post_withdrawal_quotas()
         expected_gaming = quotas['gaming_target_quota']
         expected_esim = quotas['esim_target_quota']
+        expected_xlm = quotas.get('xlm_target_quota', Decimal('0.00'))
 
         gaming_cap = settings.effective_gaming_capital
         db_game_profit = GameProfitRecord.objects.aggregate(t=Sum('net_profit_dzd'))['t'] or Decimal('0.00')
@@ -600,27 +852,31 @@ class BalanceEngine:
             models.Q(rip_number__icontains='00799999001738866535') | models.Q(account_name__icontains='salah')
         ).first()
         eccp_solde = salah_acc.eccp_balance_dzd if (salah_acc and salah_acc.eccp_balance_dzd and salah_acc.eccp_balance_dzd > Decimal('0.00')) else Decimal('0.00')
+        baridimob_card_balance = salah_acc.balance_dzd if salah_acc else Decimal('0.00')
         real_balance = eccp_solde
 
-        expected_total = (expected_gaming + expected_esim).quantize(Decimal('0.01'))
+        expected_total = (expected_gaming + expected_esim + expected_xlm).quantize(Decimal('0.01'))
         variance = (real_balance - expected_total).quantize(Decimal('0.01'))
 
-        # Allocation based on active operational withdrawal requirements:
-        # If real_balance covers both quotas, each gets 100% of its withdrawal requirement
+        # Allocation based on active operational withdrawal requirements across 3 quotas:
         if real_balance >= expected_total:
             available_gaming = expected_gaming
             available_esim = expected_esim
+            available_xlm = expected_xlm
             surplus = real_balance - expected_total
             shortfall = Decimal('0.00')
         elif expected_total > Decimal('0.00'):
             ratio_g = expected_gaming / expected_total
+            ratio_e = expected_esim / expected_total
             available_gaming = (real_balance * ratio_g).quantize(Decimal('0.01'))
-            available_esim = (real_balance - available_gaming).quantize(Decimal('0.01'))
+            available_esim = (real_balance * ratio_e).quantize(Decimal('0.01'))
+            available_xlm = (real_balance - available_gaming - available_esim).quantize(Decimal('0.01'))
             surplus = Decimal('0.00')
             shortfall = (expected_total - real_balance).quantize(Decimal('0.01'))
         else:
             available_gaming = Decimal('0.00')
             available_esim = Decimal('0.00')
+            available_xlm = Decimal('0.00')
             surplus = real_balance
             shortfall = Decimal('0.00')
 
@@ -630,6 +886,9 @@ class BalanceEngine:
             'rip_number': salah_acc.rip_number if salah_acc else "00799999001738866535",
             'account_email': salah_acc.account_email if salah_acc else "salahsofi",
             'real_balance_dzd': float(real_balance),
+            'eccp_balance_dzd': float(real_balance),
+            'baridimob_card_balance_dzd': float(baridimob_card_balance),
+            'eccp_last_synced_at': getattr(salah_acc, 'eccp_last_synced_at', None).isoformat() if salah_acc and getattr(salah_acc, 'eccp_last_synced_at', None) else None,
             'expected_total_dzd': float(expected_total),
             'variance_dzd': float(variance),
             'is_balanced': abs(variance) <= Decimal('1.00'),
@@ -650,6 +909,13 @@ class BalanceEngine:
                 'profit_dzd': float(esim_profit),
                 'external_assets_dzd': float(esim_external),
                 'shortfall_dzd': float(max(Decimal('0.00'), expected_esim - available_esim)),
+            },
+            'xlm': {
+                'expected_balance_dzd': float(expected_xlm),
+                'available_balance_dzd': float(available_xlm),
+                'virtual_buffer_dzd': float(available_xlm),
+                'shortfall_dzd': float(max(Decimal('0.00'), expected_xlm - available_xlm)),
+                'min_safety_threshold_xlm': 100.0,
             }
         }
 

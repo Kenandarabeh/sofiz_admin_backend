@@ -1323,21 +1323,118 @@ class BaridiMobTransactionViewSet(viewsets.ReadOnlyModelViewSet):
 
 # ==============================================================================
 # 7. FINANCIAL LEDGERS (EXPENSES, PROFITS, BILLS, CAPITAL, WITHDRAWALS)
-# ==============================================================================
+class IsAdminOrWalidTreasury(permissions.BasePermission):
+    """
+    Institutional Role-Based Access Control:
+    Restricts access strictly to:
+    1. System Administrators (is_superuser, is_staff, or Admin groups).
+    2. Walid / Treasury Officers (username containing 'walid',
+       or mission_role in [TREASURY_OFFICER, WITHDRAWAL_OPERATOR, ALL_FAMILIES],
+       or groups ['Withdrawal Operations Officer', 'Treasury & P2P Officer']).
+    """
+    message = "Access restricted: Only System Administrators and Treasury Officers (Walid) are authorized to access operational expenses."
+
+    def has_permission(self, request, view):
+        user = request.user
+        if not user or not user.is_authenticated:
+            return False
+
+        if user.is_superuser or user.is_staff:
+            return True
+
+        username = (user.username or '').lower()
+        if 'walid' in username:
+            return True
+
+        profile = getattr(user, 'operator_profile', None)
+        if profile and profile.mission_role in ['ALL_FAMILIES', 'TREASURY_OFFICER', 'WITHDRAWAL_OPERATOR']:
+            return True
+
+        if user.groups.filter(name__in=[
+            'Full Multi-Family Administrator',
+            'Super Administrator',
+            'Withdrawal Operations Officer',
+            'Treasury & P2P Officer'
+        ]).exists():
+            return True
+
+        return False
+
 
 class ExpenseRecordViewSet(viewsets.ModelViewSet):
-    queryset = ExpenseRecord.objects.all()
+    queryset = ExpenseRecord.objects.all().order_by('-expense_date', '-created_at')
     serializer_class = ExpenseRecordSerializer
+    permission_classes = [IsAdminOrWalidTreasury]
 
     def get_queryset(self):
         qs = super().get_queryset()
         sys_type = self.request.query_params.get('system_type')
         category = self.request.query_params.get('category')
-        if sys_type:
-            qs = qs.filter(system_type=sys_type)
-        if category:
-            qs = qs.filter(category=category)
+        search = self.request.query_params.get('search')
+        if sys_type and sys_type.upper() != 'ALL':
+            qs = qs.filter(system_type=sys_type.upper())
+        if category and category.upper() != 'ALL':
+            qs = qs.filter(category=category.upper())
+        if search:
+            qs = qs.filter(
+                models.Q(title__icontains=search) |
+                models.Q(notes__icontains=search) |
+                models.Q(reference__icontains=search)
+            )
         return qs
+
+    @action(detail=False, methods=['get'], url_path='summary')
+    def summary(self, request):
+        from .models import SubSystemType, ExpenseCategory
+        from django.db.models import Sum
+
+        total_dzd = ExpenseRecord.objects.aggregate(total=Sum('amount_dzd'))['total'] or Decimal('0.00')
+
+        by_system = {}
+        for code, label in SubSystemType.choices:
+            if code == SubSystemType.ALL:
+                continue
+            amt = ExpenseRecord.objects.filter(system_type=code).aggregate(total=Sum('amount_dzd'))['total'] or Decimal('0.00')
+            by_system[code] = {
+                'code': code,
+                'label': label,
+                'total_dzd': float(amt),
+            }
+
+        by_category = {}
+        for code, label in ExpenseCategory.choices:
+            amt = ExpenseRecord.objects.filter(category=code).aggregate(total=Sum('amount_dzd'))['total'] or Decimal('0.00')
+            by_category[code] = {
+                'code': code,
+                'label': label,
+                'total_dzd': float(amt),
+            }
+
+        return Response({
+            'success': True,
+            'total_expenses_dzd': float(total_dzd),
+            'total_records_count': ExpenseRecord.objects.count(),
+            'by_system': by_system,
+            'by_category': by_category,
+        })
+
+    @action(detail=False, methods=['get'], url_path='choices')
+    def choices(self, request):
+        from .models import SubSystemType, ExpenseCategory
+        systems = [
+            {'code': code, 'label': label}
+            for code, label in SubSystemType.choices
+            if code != SubSystemType.ALL
+        ]
+        categories = [
+            {'code': code, 'label': label}
+            for code, label in ExpenseCategory.choices
+        ]
+        return Response({
+            'success': True,
+            'subsystems': systems,
+            'categories': categories,
+        })
 
 
 class GameProfitRecordViewSet(viewsets.ModelViewSet):
@@ -5442,6 +5539,960 @@ class IdoomRefundRollbackAPIView(APIView):
             "reversed_profit_dzd": float(reversed_profit_val),
             "epay_response": epay_res,
         }, status=status.HTTP_201_CREATED)
+
+
+# ==============================================================================
+# IPTV (SUBSCRIPTIONS & VOUCHERS) FINANCIAL & OPERATIONS API VIEWS
+# ==============================================================================
+
+class IPTVMonitoringAPIView(APIView):
+    """
+    Dedicated Real-Time IPTV (Subscriptions & Vouchers) Financial & Stock Monitoring API View.
+    Designed for Service Operators (Soufiane) and Administrators.
+    100% Read-Only: zero financial execution or mutation actions.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        from .services.epay_service import EpaySyncService
+        from .services.balance_engine import BalanceEngine
+        from .serializers import IPTVBatchRefillSerializer, IPTVRefundRecordSerializer
+        from .models import IPTVBatchRefill, IPTVRefundRecord, StellarWallet, WalletFamily, WalletRole
+
+        status_filter = request.query_params.get('status', 'ALL')
+        limit = int(request.query_params.get('limit', 50))
+
+        # 1. Fetch live metrics from Epay API
+        wallet_res = EpaySyncService.sync_iptv_wallet()
+        stock_res = EpaySyncService.sync_iptv_stock()
+        summary_res = EpaySyncService.sync_iptv_financial_summary()
+        tx_res = EpaySyncService.sync_iptv_transactions(status=status_filter, limit=limit)
+
+        # 2. Dedicated Golden Balance Audit
+        audit = BalanceEngine.run_iptv_audit(sync_live=False)
+
+        # 3. IPTV Stellar Wallets (Collection & Profit)
+        from .services.stellar_service import StellarService
+        collection_wallet = StellarWallet.objects.filter(
+            family=WalletFamily.IPTV,
+            role=WalletRole.COLLECTION,
+            is_active=True
+        ).first()
+        if collection_wallet:
+            try:
+                StellarService.sync_wallet(collection_wallet)
+            except Exception as e:
+                logger.warning(f"Failed to sync IPTV collection wallet: {e}")
+
+        profit_wallet = StellarWallet.objects.filter(
+            family=WalletFamily.IPTV,
+            role=WalletRole.PROFIT,
+            is_active=True
+        ).first()
+
+        # 4. Recent Refills & Refunds
+        recent_batches = IPTVBatchRefill.objects.all()[:10]
+        recent_refunds = IPTVRefundRecord.objects.all()[:10]
+
+        return Response({
+            "success": True,
+            "timestamp": timezone.now().isoformat(),
+            "operational_wallet": wallet_res,
+            "stock_inventory": stock_res,
+            "financial_summary": summary_res,
+            "transactions": tx_res.get("transactions", []),
+            "has_in_flight_processing": tx_res.get("has_in_flight_processing", False),
+            "audit": audit,
+            "collection_wallet": {
+                "name": collection_wallet.name if collection_wallet else "IPTV Collection Wallet",
+                "public_address": collection_wallet.public_address if collection_wallet else None,
+                "dzt_balance": float(collection_wallet.dzt_balance) if collection_wallet else 0.0,
+            },
+            "profit_wallet": {
+                "name": profit_wallet.name if profit_wallet else "IPTV Profit Reserve (Virtual)",
+                "public_address": profit_wallet.public_address if profit_wallet else None,
+                "balance_dzd": float(profit_wallet.dzt_balance) if profit_wallet else 0.0,
+            },
+            "recent_batches": IPTVBatchRefillSerializer(recent_batches, many=True).data,
+            "recent_refunds": IPTVRefundRecordSerializer(recent_refunds, many=True).data,
+        }, status=status.HTTP_200_OK)
+
+
+class IPTVWithdrawalsRefillAPIView(APIView):
+    """
+    Dedicated IPTV Subscription Stock Refill & Dual-Action Withdrawal Hub.
+    Restricted strictly to Treasury Officers (Walid) and Administrators.
+    Capabilities:
+    - Pre-flight check: locks refill if any transaction is ON_PROCESSING.
+    - Upload & parse batch voucher card files (.csv, .xlsx, .txt, .json).
+    - Dual-action execution: Deducts procurement cost to Big Wallet, segregates net profit to IPTV Profit Reserve.
+    """
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        from .services.epay_service import EpaySyncService
+        from .models import (
+            StellarWallet,
+            WalletFamily,
+            WalletRole,
+            IPTVBatchRefill,
+            IPTVRefundRecord,
+        )
+        from .serializers import IPTVBatchRefillSerializer, IPTVRefundRecordSerializer
+
+        # Live in-flight check
+        tx_data = EpaySyncService.sync_iptv_transactions(limit=10)
+        has_in_flight = tx_data.get("has_in_flight_processing", False)
+
+        # Available Treasury Wallets for funding
+        treasury_wallets = StellarWallet.objects.filter(
+            family=WalletFamily.TREASURY,
+            is_active=True
+        ).values('id', 'name', 'public_address', 'dzt_balance')
+
+        iptv_profit_wallet = StellarWallet.objects.filter(
+            family=WalletFamily.IPTV,
+            role=WalletRole.PROFIT,
+            is_active=True
+        ).first()
+
+        recent_batches = IPTVBatchRefill.objects.all()[:15]
+        recent_refunds = IPTVRefundRecord.objects.all()[:15]
+
+        return Response({
+            "success": True,
+            "can_refill": not has_in_flight,
+            "has_in_flight_processing": has_in_flight,
+            "in_flight_warning": (
+                "⚠️ Active transactions are currently processing in Epay. Refill & withdrawal operations are locked until all in-flight transactions finalize."
+                if has_in_flight else None
+            ),
+            "treasury_wallets": list(treasury_wallets),
+            "profit_wallet": {
+                "name": iptv_profit_wallet.name if iptv_profit_wallet else "IPTV Profit Reserve (Virtual)",
+                "balance_dzd": float(iptv_profit_wallet.dzt_balance) if iptv_profit_wallet else 0.0,
+            },
+            "recent_batches": IPTVBatchRefillSerializer(recent_batches, many=True).data,
+            "recent_refunds": IPTVRefundRecordSerializer(recent_refunds, many=True).data,
+        })
+
+    def post(self, request):
+        action_type = request.data.get('action', 'execute').lower()
+
+        if action_type == 'preview':
+            return self._handle_preview(request)
+        elif action_type == 'execute':
+            return self._handle_execute(request)
+        else:
+            return Response({"success": False, "error": f"Invalid action: {action_type}"}, status=status.HTTP_400_BAD_REQUEST)
+
+    def _parse_uploaded_cards(self, request):
+        """
+        Parses cards from uploaded file or JSON input for IPTV.
+        Returns tuple: (cards_list, breakdown, total_count, total_face_value, total_cost, total_profit)
+        """
+        uploaded_file = request.FILES.get('batch_file')
+        raw_json_input = request.data.get('cards_data')
+        discount_rate = Decimal(str(request.data.get('discount_pct', '10.00'))) / Decimal("100")
+
+        breakdown = {}
+        total_count = 0
+        total_face_value = Decimal("0.00")
+        total_cost = Decimal("0.00")
+        total_profit = Decimal("0.00")
+        parsed_cards = []
+
+        if uploaded_file:
+            content = uploaded_file.read().decode('utf-8', errors='ignore')
+            lines = [line.strip() for line in content.splitlines() if line.strip()]
+
+            for line in lines:
+                parts = [p.strip() for p in line.replace(';', ',').replace('\t', ',').split(',')]
+                if not parts:
+                    continue
+                try:
+                    denom_val = Decimal(str(parts[0]))
+                except Exception:
+                    continue
+
+                if denom_val <= Decimal("0.00"):
+                    continue
+
+                denom_str = f"{int(denom_val)} DZD"
+                if denom_str not in breakdown:
+                    breakdown[denom_str] = {
+                        "denomination": float(denom_val),
+                        "count": 0,
+                        "face_value": 0.0,
+                        "cost": 0.0,
+                        "profit": 0.0,
+                    }
+
+                count_increment = 1
+                if len(parts) >= 2 and parts[1].isdigit():
+                    count_increment = int(parts[1])
+
+                card_cost = (denom_val * (Decimal("1.00") - discount_rate)).quantize(Decimal("0.01"))
+                card_profit = (denom_val - card_cost).quantize(Decimal("0.01"))
+
+                breakdown[denom_str]["count"] += count_increment
+                breakdown[denom_str]["face_value"] += float(denom_val * count_increment)
+                breakdown[denom_str]["cost"] += float(card_cost * count_increment)
+                breakdown[denom_str]["profit"] += float(card_profit * count_increment)
+
+                total_count += count_increment
+                total_face_value += (denom_val * count_increment)
+                total_cost += (card_cost * count_increment)
+                total_profit += (card_profit * count_increment)
+                parsed_cards.append({"denomination": float(denom_val), "count": count_increment})
+
+        elif raw_json_input:
+            import json
+            if isinstance(raw_json_input, str):
+                try:
+                    raw_json_input = json.loads(raw_json_input)
+                except Exception:
+                    pass
+
+            if isinstance(raw_json_input, dict):
+                for denom_key, cnt in raw_json_input.items():
+                    try:
+                        denom_val = Decimal(str(denom_key))
+                        cnt = int(cnt)
+                    except Exception:
+                        continue
+                    if cnt <= 0:
+                        continue
+
+                    card_cost = (denom_val * (Decimal("1.00") - discount_rate)).quantize(Decimal("0.01"))
+                    card_profit = (denom_val - card_cost).quantize(Decimal("0.01"))
+                    denom_str = f"{int(denom_val)} DZD"
+
+                    if denom_str not in breakdown:
+                        breakdown[denom_str] = {
+                            "denomination": float(denom_val),
+                            "count": 0,
+                            "face_value": 0.0,
+                            "cost": 0.0,
+                            "profit": 0.0,
+                        }
+                    breakdown[denom_str]["count"] += cnt
+                    breakdown[denom_str]["face_value"] += float(denom_val * cnt)
+                    breakdown[denom_str]["cost"] += float(card_cost * cnt)
+                    breakdown[denom_str]["profit"] += float(card_profit * cnt)
+
+                    total_count += cnt
+                    total_face_value += (denom_val * cnt)
+                    total_cost += (card_cost * cnt)
+                    total_profit += (card_profit * cnt)
+                    parsed_cards.append({"denomination": float(denom_val), "count": cnt})
+
+            elif isinstance(raw_json_input, list):
+                for item in raw_json_input:
+                    denom_val = Decimal(str(item.get("denomination", 0)))
+                    cnt = int(item.get("count", 1))
+                    if denom_val <= 0 or cnt <= 0:
+                        continue
+
+                    card_cost = Decimal(str(item.get("cost", 0))) or (denom_val * (Decimal("1.00") - discount_rate)).quantize(Decimal("0.01"))
+                    card_profit = (denom_val - card_cost).quantize(Decimal("0.01"))
+                    denom_str = f"{int(denom_val)} DZD"
+
+                    if denom_str not in breakdown:
+                        breakdown[denom_str] = {
+                            "denomination": float(denom_val),
+                            "count": 0,
+                            "face_value": 0.0,
+                            "cost": 0.0,
+                            "profit": 0.0,
+                        }
+                    breakdown[denom_str]["count"] += cnt
+                    breakdown[denom_str]["face_value"] += float(denom_val * cnt)
+                    breakdown[denom_str]["cost"] += float(card_cost * cnt)
+                    breakdown[denom_str]["profit"] += float(card_profit * cnt)
+
+                    total_count += cnt
+                    total_face_value += (denom_val * cnt)
+                    total_cost += (card_cost * cnt)
+                    total_profit += (card_profit * cnt)
+                    parsed_cards.append({"denomination": float(denom_val), "count": cnt})
+
+        return parsed_cards, breakdown, total_count, total_face_value, total_cost, total_profit
+
+    def _handle_preview(self, request):
+        from .services.epay_service import EpaySyncService
+
+        tx_data = EpaySyncService.sync_iptv_transactions(limit=10)
+        has_in_flight = tx_data.get("has_in_flight_processing", False)
+
+        cards, breakdown, total_count, total_face_value, total_cost, total_profit = self._parse_uploaded_cards(request)
+
+        if total_count == 0:
+            return Response({
+                "success": False,
+                "error": "No valid cards or subscriptions found in input file or data.",
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({
+            "success": True,
+            "preview_mode": True,
+            "can_execute": not has_in_flight,
+            "has_in_flight_processing": has_in_flight,
+            "total_cards_count": total_count,
+            "total_face_value_dzd": float(total_face_value),
+            "total_cost_dzd": float(total_cost),
+            "expected_profit_dzd": float(total_profit),
+            "breakdown": breakdown,
+            "warning": (
+                "⚠️ Execution is LOCKED: Live transactions are currently processing in Epay."
+                if has_in_flight else None
+            ),
+        })
+
+    def _handle_execute(self, request):
+        from .services.epay_service import EpaySyncService
+        from .models import (
+            IPTVBatchRefill,
+            WithdrawalRecord,
+            WithdrawalPurpose,
+            WithdrawalStage,
+            WithdrawalType,
+            SubSystemType,
+            StellarWallet,
+            WalletFamily,
+            WalletRole,
+        )
+        import uuid
+
+        # 1. Strict Pre-flight Safety Guard
+        tx_data = EpaySyncService.sync_iptv_transactions(limit=10)
+        if tx_data.get("has_in_flight_processing", False):
+            return Response({
+                "success": False,
+                "error": "Refill execution strictly blocked: Live transactions are currently ON_PROCESSING in Epay. Please wait until completed.",
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        cards, breakdown, total_count, total_face_value, total_cost, total_profit = self._parse_uploaded_cards(request)
+
+        if total_count == 0:
+            return Response({
+                "success": False,
+                "error": "No valid subscription codes to refill. Please upload a valid batch voucher file.",
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        uploaded_file = request.FILES.get('batch_file')
+        file_name = uploaded_file.name if uploaded_file else "manual_iptv_refill.json"
+
+        batch_ref = f"IPTV-{timezone.now().strftime('%Y%m%d%H%M')}-{uuid.uuid4().hex[:6].upper()}"
+
+        source_wallet_id = request.data.get('source_wallet_id')
+        source_wallet = None
+        if source_wallet_id:
+            source_wallet = StellarWallet.objects.filter(id=source_wallet_id, is_active=True).first()
+        if not source_wallet:
+            source_wallet = StellarWallet.objects.filter(family=WalletFamily.TREASURY, role=WalletRole.VAULT, is_active=True).first()
+
+        # Execute atomic financial transactions
+        with transaction.atomic():
+            withdrawal = WithdrawalRecord.objects.create(
+                title=f"IPTV Voucher Refill Batch #{batch_ref}",
+                reference=batch_ref,
+                amount_dzd=total_cost,
+                system_type=SubSystemType.IPTV,
+                purpose_code=WithdrawalPurpose.IPTV_STOCK_REFILL,
+                withdrawal_type=WithdrawalType.INSTITUTIONAL_INTERNAL,
+                stage=WithdrawalStage.COMPLETED,
+                source_wallet=source_wallet,
+                executed_by=request.user if request.user.is_authenticated else None,
+                notes=f"Procurement of {total_count} IPTV subscription vouchers. Face Value: {total_face_value:,.2f} DZD. Cost: {total_cost:,.2f} DZD. Profit: {total_profit:,.2f} DZD.",
+            )
+
+            # Segregate Net Profit to IPTV Profit Reserve Wallet
+            profit_wallet = StellarWallet.objects.filter(
+                family=WalletFamily.IPTV,
+                role=WalletRole.PROFIT,
+                is_active=True
+            ).first()
+
+            if profit_wallet and total_profit > 0:
+                profit_wallet.dzt_balance = (profit_wallet.dzt_balance + total_profit).quantize(Decimal("0.0000001"))
+                profit_wallet.save(update_fields=['dzt_balance'])
+
+            batch_record = IPTVBatchRefill.objects.create(
+                batch_reference=batch_ref,
+                total_cards_count=total_count,
+                total_face_value_dzd=total_face_value,
+                total_cost_dzd=total_cost,
+                expected_profit_dzd=total_profit,
+                breakdown_json=breakdown,
+                uploaded_file_name=file_name,
+                executed_by=request.user if request.user.is_authenticated else None,
+                withdrawal_record=withdrawal,
+            )
+
+        return Response({
+            "success": True,
+            "message": f"Successfully processed IPTV refill batch #{batch_ref} with {total_count} subscriptions.",
+            "batch_reference": batch_ref,
+            "total_cards_count": total_count,
+            "total_face_value_dzd": float(total_face_value),
+            "total_cost_dzd": float(total_cost),
+            "expected_profit_dzd": float(total_profit),
+            "breakdown": breakdown,
+            "withdrawal_record_id": withdrawal.id,
+        }, status=status.HTTP_201_CREATED)
+
+
+class IPTVRefundRollbackAPIView(APIView):
+    """
+    Dedicated IPTV Code Failure & Reversal Refund API View.
+    Handles rollback of phantom profit from IPTV Profit Reserve and triggers refund in Epay.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        from .services.epay_service import EpaySyncService
+        from .models import (
+            IPTVRefundRecord,
+            StellarWallet,
+            WalletFamily,
+            WalletRole,
+        )
+        import uuid
+
+        epay_tx_id = request.data.get('epay_transaction_id')
+        denomination_val = Decimal(str(request.data.get('denomination_dzd', '0.00')))
+        reversed_profit_val = Decimal(str(request.data.get('reversed_profit_dzd', '0.00')))
+        client_phone = request.data.get('client_phone_or_account', '')
+        reason = request.data.get('reason', 'FAILED_DEFECTIVE_CARD')
+
+        if not epay_tx_id:
+            return Response({"success": False, "error": "Missing epay_transaction_id."}, status=status.HTTP_400_BAD_REQUEST)
+
+        refund_ref = f"REF-IPTV-{timezone.now().strftime('%Y%m%d%H%M')}-{uuid.uuid4().hex[:6].upper()}"
+
+        with transaction.atomic():
+            profit_wallet = StellarWallet.objects.filter(
+                family=WalletFamily.IPTV,
+                role=WalletRole.PROFIT,
+                is_active=True
+            ).first()
+
+            if profit_wallet and reversed_profit_val > Decimal("0.00"):
+                new_bal = max(Decimal("0.00"), profit_wallet.dzt_balance - reversed_profit_val)
+                profit_wallet.dzt_balance = new_bal.quantize(Decimal("0.0000001"))
+                profit_wallet.save(update_fields=['dzt_balance'])
+
+            record = IPTVRefundRecord.objects.create(
+                refund_reference=refund_ref,
+                epay_transaction_id=str(epay_tx_id),
+                client_phone_or_account=client_phone,
+                denomination_dzd=denomination_val,
+                reversed_profit_dzd=reversed_profit_val,
+                reason=reason,
+                executed_by=request.user if request.user.is_authenticated else None,
+            )
+
+        epay_res = EpaySyncService.post_iptv_refund(
+            transaction_id=str(epay_tx_id),
+            reason=reason,
+            refund_amount_dzd=float(denomination_val)
+        )
+
+        return Response({
+            "success": True,
+            "message": f"Refund #{refund_ref} recorded successfully. Reversal executed.",
+            "refund_reference": refund_ref,
+            "epay_transaction_id": epay_tx_id,
+            "reversed_profit_dzd": float(reversed_profit_val),
+            "epay_response": epay_res,
+        }, status=status.HTTP_201_CREATED)
+
+
+# ==============================================================================
+# 14. FLEXY TELECOM SUBSYSTEM (MOBILIS, DJEZZY, OOREDOO) API VIEWS
+# ==============================================================================
+
+class FlexyOperationsMonitoringAPIView(APIView):
+    """
+    Dedicated Flexy (Mobilis, Djezzy, Ooredoo) Operations & Profit Overview Hub.
+    Aggregates operator-level analytics, live Shemsnet balance, FIFO tranches queue,
+    and Golden Balance Equation audit.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        from .services.shemsnet_service import ShemsnetService
+        from .services.balance_engine import BalanceEngine
+        from .models import (
+            FlexyFundingTranche,
+            FlexyOperationRecord,
+            FlexyDualSweepBatch,
+            StellarWallet,
+            WalletFamily,
+            WalletRole,
+        )
+        from .serializers import (
+            FlexyFundingTrancheSerializer,
+            FlexyOperationRecordSerializer,
+            FlexyDualSweepBatchSerializer,
+        )
+        from django.db.models import Sum, Count
+
+        # 1. Background live sync of Shemsnet status and recent operations
+        sync_error = None
+        try:
+            ShemsnetService.sync_operations_feed(limit=30)
+        except Exception as e:
+            sync_error = str(e)
+
+        # 2. Golden Balance Audit
+        audit_data = BalanceEngine.run_flexy_audit(sync_live=True)
+
+        # 3. Aggregate metrics by operator
+        ops_qs = FlexyOperationRecord.objects.filter(status='SUCCESS')
+
+        mob_reg_qs = ops_qs.filter(operator='MOBILIS')
+        mob_pixx_qs = ops_qs.filter(operator='PIXX')
+        djezzy_qs = ops_qs.filter(operator='DJEZZY')
+        ooredoo_qs = ops_qs.filter(operator='OOREDOO')
+
+        def _summarize_op(qs):
+            v = qs.aggregate(vol=Sum('face_amount_dzd'), cost=Sum('procurement_cost_dzd'), prf=Sum('net_profit_dzd'), cnt=Count('id'))
+            vol = v['vol'] or Decimal('0.00')
+            prf = v['prf'] or Decimal('0.00')
+            cost = v['cost'] or Decimal('0.00')
+            cnt = v['cnt'] or 0
+            bonus_pct = float((prf / cost * Decimal('100.00')).quantize(Decimal('0.01'))) if cost > 0 else 0.0
+            margin_pct = float((prf / vol * Decimal('100.00')).quantize(Decimal('0.01'))) if vol > 0 else 0.0
+            return {
+                'count': cnt,
+                'volume_dzd': float(vol),
+                'procurement_cost_dzd': float(cost),
+                'profit_dzd': float(prf),
+                'effective_bonus_pct': bonus_pct,
+                'margin_pct': margin_pct,
+            }
+
+        mob_reg = _summarize_op(mob_reg_qs)
+        mob_pixx = _summarize_op(mob_pixx_qs)
+        djezzy_summary = _summarize_op(djezzy_qs)
+        ooredoo_summary = _summarize_op(ooredoo_qs)
+
+        # Combined Mobilis (Regular + Pixx)
+        mob_combined_vol = mob_reg['volume_dzd'] + mob_pixx['volume_dzd']
+        mob_combined_cost = mob_reg['procurement_cost_dzd'] + mob_pixx['procurement_cost_dzd']
+        mob_combined_prf = mob_reg['profit_dzd'] + mob_pixx['profit_dzd']
+        mob_combined_cnt = mob_reg['count'] + mob_pixx['count']
+        mob_combined_bonus = (
+            round((mob_combined_prf / mob_combined_cost) * 100, 2)
+            if mob_combined_cost > 0 else 0.0
+        )
+        mob_combined_margin = (
+            round((mob_combined_prf / mob_combined_vol) * 100, 2)
+            if mob_combined_vol > 0 else 0.0
+        )
+
+        mobilis_summary = {
+            'count': mob_combined_cnt,
+            'volume_dzd': mob_combined_vol,
+            'procurement_cost_dzd': mob_combined_cost,
+            'profit_dzd': mob_combined_prf,
+            'effective_bonus_pct': mob_combined_bonus,
+            'margin_pct': mob_combined_margin,
+            'breakdown': {
+                'regular': mob_reg,
+                'pixx': mob_pixx,
+            }
+        }
+
+        total_volume = mob_combined_vol + djezzy_summary['volume_dzd'] + ooredoo_summary['volume_dzd']
+        total_profit = mob_combined_prf + djezzy_summary['profit_dzd'] + ooredoo_summary['profit_dzd']
+        overall_margin = round((total_profit / total_volume) * 100, 2) if total_volume > 0 else 0.0
+
+        # 4. Comprehensive Statistics & Evolution Analytics
+        from datetime import timedelta
+        now = timezone.now()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        yesterday_start = today_start - timedelta(days=1)
+
+        total_all_ops = FlexyOperationRecord.objects.all()
+        total_ops_count = total_all_ops.count()
+        success_ops_count = total_all_ops.filter(status='SUCCESS').count()
+        failed_ops_count = total_all_ops.filter(status='FAILED').count()
+        success_rate_pct = round((success_ops_count / total_ops_count) * 100, 1) if total_ops_count > 0 else 0.0
+
+        today_qs = total_all_ops.filter(created_at__gte=today_start, status='SUCCESS')
+        today_vol = float(today_qs.aggregate(s=Sum('face_amount_dzd'))['s'] or 0)
+        today_prf = float(today_qs.aggregate(s=Sum('net_profit_dzd'))['s'] or 0)
+        today_cnt = today_qs.count()
+
+        yesterday_qs = total_all_ops.filter(created_at__gte=yesterday_start, created_at__lt=today_start, status='SUCCESS')
+        yesterday_vol = float(yesterday_qs.aggregate(s=Sum('face_amount_dzd'))['s'] or 0)
+        yesterday_prf = float(yesterday_qs.aggregate(s=Sum('net_profit_dzd'))['s'] or 0)
+        yesterday_cnt = yesterday_qs.count()
+
+        if yesterday_vol > 0:
+            growth_volume_pct = round(((today_vol - yesterday_vol) / yesterday_vol) * 100, 1)
+        else:
+            growth_volume_pct = 100.0 if today_vol > 0 else 0.0
+
+        if yesterday_prf > 0:
+            growth_profit_pct = round(((today_prf - yesterday_prf) / yesterday_prf) * 100, 1)
+        else:
+            growth_profit_pct = 100.0 if today_prf > 0 else 0.0
+
+        # 7-day daily trends progression
+        daily_trends = []
+        for i in range(6, -1, -1):
+            day_date = (now - timedelta(days=i)).date()
+            d_qs = total_all_ops.filter(created_at__date=day_date, status='SUCCESS')
+            d_vol = float(d_qs.aggregate(s=Sum('face_amount_dzd'))['s'] or 0)
+            d_prf = float(d_qs.aggregate(s=Sum('net_profit_dzd'))['s'] or 0)
+            d_cnt = d_qs.count()
+            daily_trends.append({
+                'date': day_date.strftime('%b %d'),
+                'volume_dzd': d_vol,
+                'profit_dzd': d_prf,
+                'count': d_cnt,
+            })
+
+        avg_ticket = round(total_volume / success_ops_count, 2) if success_ops_count > 0 else 0.0
+
+        statistics = {
+            'total_operations_count': total_ops_count,
+            'success_count': success_ops_count,
+            'failed_count': failed_ops_count,
+            'success_rate_pct': success_rate_pct,
+            'avg_ticket_dzd': avg_ticket,
+            'today': {
+                'volume_dzd': today_vol,
+                'profit_dzd': today_prf,
+                'count': today_cnt,
+            },
+            'yesterday': {
+                'volume_dzd': yesterday_vol,
+                'profit_dzd': yesterday_prf,
+                'count': yesterday_cnt,
+            },
+            'growth_volume_pct': growth_volume_pct,
+            'growth_profit_pct': growth_profit_pct,
+            'daily_trends': daily_trends,
+        }
+
+        # 5. Tranches queue & recent records (up to 250 operations)
+        active_tranches = FlexyFundingTranche.objects.filter(is_active=True).order_by('created_at')
+        all_tranches = FlexyFundingTranche.objects.all().order_by('-created_at')[:10]
+        recent_ops = FlexyOperationRecord.objects.all().order_by('-created_at')[:250]
+        recent_sweeps = FlexyDualSweepBatch.objects.all().order_by('-created_at')[:10]
+
+        profit_wallet = StellarWallet.objects.filter(family=WalletFamily.FLEXY, role=WalletRole.PROFIT, is_active=True).first()
+
+        return Response({
+            'success': True,
+            'sync_error': sync_error,
+            'audit': audit_data,
+            'summary': {
+                'total_volume_dzd': total_volume,
+                'total_profit_dzd': total_profit,
+                'overall_margin_pct': overall_margin,
+                'total_operations_count': success_ops_count,
+            },
+            'statistics': statistics,
+            'operators': {
+                'mobilis': mobilis_summary,
+                'djezzy': djezzy_summary,
+                'ooredoo': ooredoo_summary,
+            },
+            'active_tranches': FlexyFundingTrancheSerializer(active_tranches, many=True).data,
+            'all_tranches': FlexyFundingTrancheSerializer(all_tranches, many=True).data,
+            'recent_operations': FlexyOperationRecordSerializer(recent_ops, many=True).data,
+            'recent_sweeps': FlexyDualSweepBatchSerializer(recent_sweeps, many=True).data,
+            'profit_wallet': {
+                'name': profit_wallet.name if profit_wallet else "Flexy Profit Vault",
+                'balance_dzd': float(profit_wallet.dzt_balance) if profit_wallet else 0.0,
+                'public_address': profit_wallet.public_address if profit_wallet else None,
+            }
+        })
+
+
+class FlexyWithdrawalsRefillAPIView(APIView):
+    """
+    Dedicated Flexy Refill & Dual-Sweep Withdrawal Hub.
+    Restricted to Treasury Officers (Walid) and Super Administrators.
+    Capabilities:
+    - One-Click automated topup from Treasury DZT wallet to Shemsnet.
+    - Dynamic bonus synchronization from Shemsnet.
+    - Dual-Sweep execution (capital to Collection, profit to Profit Vault).
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        from .services.shemsnet_service import ShemsnetService
+        from .services.flexy_sweep_engine import FlexySweepEngine
+        from .models import (
+            StellarWallet,
+            WalletFamily,
+            WalletRole,
+            WithdrawalRecord,
+            WithdrawalPurpose,
+            FlexyFundingTranche,
+            FlexyDualSweepBatch,
+        )
+        from .serializers import (
+            FlexyFundingTrancheSerializer,
+            FlexyDualSweepBatchSerializer,
+            WithdrawalRecordSerializer,
+        )
+
+        user_status = {}
+        try:
+            user_status = ShemsnetService.get_live_user_status()
+        except Exception as e:
+            user_status = {"error": str(e), "operational_balance_dzd": 0.0, "rates": {}}
+
+        # Primary Funding Source: Dedicated Flexy Withdrawal Wallet (Revolving Operational Working Capital)
+        withdrawal_wallet = StellarWallet.objects.filter(
+            family=WalletFamily.FLEXY,
+            role=WalletRole.WITHDRAWAL,
+            is_active=True
+        ).first()
+
+        funding_wallets = []
+        if withdrawal_wallet:
+            funding_wallets.append({
+                'id': withdrawal_wallet.id,
+                'name': f"{withdrawal_wallet.name} (Revolving Capital)",
+                'public_address': withdrawal_wallet.public_address,
+                'dzt_balance': float(withdrawal_wallet.dzt_balance),
+                'role': withdrawal_wallet.role,
+                'family': withdrawal_wallet.family,
+                'is_primary': True,
+            })
+
+        # Secondary/Auxiliary funding options if needed
+        other_wallets = StellarWallet.objects.filter(
+            is_active=True
+        ).exclude(
+            id=withdrawal_wallet.id if withdrawal_wallet else None
+        ).filter(
+            role__in=[WalletRole.WITHDRAWAL, WalletRole.VAULT]
+        ).values('id', 'name', 'public_address', 'dzt_balance', 'role', 'family')
+
+        for ow in other_wallets:
+            funding_wallets.append({
+                'id': ow['id'],
+                'name': ow['name'],
+                'public_address': ow['public_address'],
+                'dzt_balance': float(ow['dzt_balance']),
+                'role': ow['role'],
+                'family': ow['family'],
+                'is_primary': False,
+            })
+
+        operator_wallets = list(StellarWallet.objects.filter(
+            family=WalletFamily.FLEXY,
+            is_active=True
+        ).values('id', 'name', 'public_address', 'dzt_balance', 'role'))
+
+        collection_liquidity = float(withdrawal_wallet.dzt_balance) if withdrawal_wallet else 0.0
+        for ow in operator_wallets:
+            collection_liquidity += float(ow.get('dzt_balance', 0.0))
+
+        profit_wallet = StellarWallet.objects.filter(
+            family=WalletFamily.FLEXY,
+            role=WalletRole.PROFIT,
+            is_active=True
+        ).first()
+
+        recent_refills = WithdrawalRecord.objects.filter(
+            purpose_code=WithdrawalPurpose.FLEXY_REFILL
+        ).order_by('-created_at')[:15]
+
+        active_tranches = FlexyFundingTranche.objects.filter(is_active=True).order_by('created_at')
+        unswept_summary = FlexySweepEngine.get_unswept_summary()
+
+        return Response({
+            'success': True,
+            'shemsnet_status': user_status,
+            'collection_wallet': {
+                'id': withdrawal_wallet.id if withdrawal_wallet else None,
+                'name': withdrawal_wallet.name if withdrawal_wallet else "Flexy Collection & Withdrawal Wallet",
+                'dzt_balance': float(withdrawal_wallet.dzt_balance) if withdrawal_wallet else 0.0,
+                'public_address': withdrawal_wallet.public_address if withdrawal_wallet else None,
+            },
+            'total_collection_liquidity_dzd': collection_liquidity,
+            'operator_wallets': operator_wallets,
+            'funding_wallets': funding_wallets,
+            'treasury_wallets': funding_wallets,  # alias for backwards compatibility
+            'withdrawal_wallet': {
+                'id': withdrawal_wallet.id if withdrawal_wallet else None,
+                'name': withdrawal_wallet.name if withdrawal_wallet else "Flexy Collection & Withdrawal Wallet",
+                'dzt_balance': float(withdrawal_wallet.dzt_balance) if withdrawal_wallet else 0.0,
+                'public_address': withdrawal_wallet.public_address if withdrawal_wallet else None,
+            },
+            'profit_wallet': {
+                'name': profit_wallet.name if profit_wallet else "Flexy Profit Vault",
+                'balance_dzd': float(profit_wallet.dzt_balance) if profit_wallet else 0.0,
+                'public_address': profit_wallet.public_address if profit_wallet else None,
+            },
+            'unswept_summary': unswept_summary,
+            'active_tranches': FlexyFundingTrancheSerializer(active_tranches, many=True).data,
+            'recent_refills': WithdrawalRecordSerializer(recent_refills, many=True).data,
+        })
+
+    def post(self, request):
+        action_type = request.data.get('action', 'execute_topup').lower()
+
+        if action_type == 'execute_topup':
+            from .services.shemsnet_service import ShemsnetService
+            amount_dzt = Decimal(str(request.data.get('amount_dzt', '0.00')))
+            source_wallet_id = request.data.get('source_wallet_id')
+            res = ShemsnetService.execute_automated_topup(
+                amount_dzt=amount_dzt,
+                source_wallet_id=source_wallet_id,
+                executed_by_user=request.user if request.user.is_authenticated else None
+            )
+            status_code = status.HTTP_200_OK if res.get('success') else status.HTTP_400_BAD_REQUEST
+            return Response(res, status=status_code)
+
+        elif action_type == 'sync_bonus':
+            from .services.shemsnet_service import ShemsnetService
+            rates = ShemsnetService.get_live_bonus_rates()
+            return Response({'success': True, 'rates': rates})
+
+        elif action_type == 'execute_sweep':
+            from .services.flexy_sweep_engine import FlexySweepEngine
+            operator = request.data.get('operator', 'ALL')
+            source_wallet_id = request.data.get('source_wallet_id')
+            collection_wallet_id = request.data.get('collection_wallet_id')
+            profit_wallet_id = request.data.get('profit_wallet_id')
+
+            res = FlexySweepEngine.execute_dual_sweep(
+                operator=operator,
+                source_wallet_id=source_wallet_id,
+                collection_wallet_id=collection_wallet_id,
+                profit_wallet_id=profit_wallet_id,
+                executed_by_user=request.user if request.user.is_authenticated else None
+            )
+            status_code = status.HTTP_200_OK if res.get('success') else status.HTTP_400_BAD_REQUEST
+            return Response(res, status=status_code)
+
+        else:
+            return Response({'success': False, 'error': f'Unsupported action: {action_type}'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class XLMLiquidityStatusAPIView(APIView):
+    """
+    XLM Liquidity Pipeline Status & Outflow Initiation Hub.
+    GET: Retrieves master vault native XLM status, shared BaridiMob quotas, and pipeline cycles.
+    POST: Initiates a new XLM procurement cycle from BaridiMob outflow.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        from .services.xlm_procurement_service import XLMProcurementService
+        force_sync = request.query_params.get('sync') in ['true', '1', 'True']
+        try:
+            res = XLMProcurementService.get_pipeline_overview(force_sync=force_sync)
+            return Response(res, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({'success': False, 'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def post(self, request):
+        from .services.xlm_procurement_service import XLMProcurementService
+        amount_dzd = request.data.get('amount_dzd')
+        receipt_reference = request.data.get('receipt_reference')
+        receipt_file = request.FILES.get('receipt_file')
+        notes = request.data.get('notes', '')
+
+        try:
+            res = XLMProcurementService.initiate_cycle(
+                amount_dzd=amount_dzd,
+                receipt_reference=receipt_reference,
+                receipt_file=receipt_file,
+                executed_by=request.user if request.user.is_authenticated else None,
+                notes=notes
+            )
+            return Response(res, status=status.HTTP_201_CREATED)
+        except Exception as e:
+            return Response({'success': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class XLMCycleStageAdvanceAPIView(APIView):
+    """
+    Advances an XLM procurement cycle across its sequential stages:
+    - Stage 1 -> Stage 2: P2P Order details (USDT acquired, P2P rate, order ID)
+    - Stage 2 -> Stage 3: Convert details (XLM acquired, conversion rate, fees)
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        from .services.xlm_procurement_service import XLMProcurementService
+        cycle_id = request.data.get('cycle_id')
+        target_stage = request.data.get('target_stage')
+
+        if not cycle_id:
+            return Response({'success': False, 'error': 'cycle_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            if target_stage in ['STAGE_2_CONVERT', '2', 2]:
+                res = XLMProcurementService.advance_to_convert(
+                    cycle_id=cycle_id,
+                    p2p_order_id=request.data.get('p2p_order_id', ''),
+                    usdt_acquired=request.data.get('usdt_acquired', 0),
+                    p2p_rate_dzd=request.data.get('p2p_rate_dzd', 0),
+                    p2p_platform=request.data.get('p2p_platform', 'BINANCE'),
+                    notes=request.data.get('notes', '')
+                )
+            elif target_stage in ['STAGE_3_WITHDRAW', '3', 3]:
+                res = XLMProcurementService.advance_to_withdraw(
+                    cycle_id=cycle_id,
+                    xlm_acquired=request.data.get('xlm_acquired', 0),
+                    convert_rate_usdt=request.data.get('convert_rate_usdt', 0),
+                    convert_fee_usdt=request.data.get('convert_fee_usdt', 0),
+                    notes=request.data.get('notes', '')
+                )
+            else:
+                return Response({'success': False, 'error': f'Invalid target stage: {target_stage}'}, status=status.HTTP_400_BAD_REQUEST)
+
+            return Response(res, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({'success': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class XLMCycleVerifyOnChainAPIView(APIView):
+    """
+    Stage 4: Blockchain consensus verification on Stellar Horizon.
+    Directly inspects the ledger for the Tx Hash and automatically completes the cycle.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        from .services.xlm_procurement_service import XLMProcurementService
+        cycle_id = request.data.get('cycle_id')
+        stellar_tx_hash = request.data.get('stellar_tx_hash')
+        binance_withdrawal_id = request.data.get('binance_withdrawal_id')
+        network_fee_xlm = request.data.get('network_fee_xlm')
+
+        if not cycle_id:
+            return Response({'success': False, 'error': 'cycle_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            res = XLMProcurementService.verify_and_complete_on_chain(
+                cycle_id=cycle_id,
+                stellar_tx_hash=stellar_tx_hash,
+                binance_withdrawal_id=binance_withdrawal_id,
+                network_fee_xlm=network_fee_xlm,
+            )
+            status_code = status.HTTP_200_OK if res.get('success') else status.HTTP_400_BAD_REQUEST
+            return Response(res, status=status_code)
+        except Exception as e:
+            return Response({'success': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+
 
 
 

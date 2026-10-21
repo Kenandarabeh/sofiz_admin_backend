@@ -86,14 +86,15 @@ class StellarService:
             res = cls.get_account_balances(wallet.public_address, client=client)
             # Blockchain is absolute truth: always record exact on-chain balance
             wallet.dzt_balance = res["dzt"]
+            wallet.native_xlm_balance = res.get("xlm", Decimal("0.0000000"))
             wallet.last_synced_at = timezone.now()
             wallet.last_error = None
-            wallet.save(update_fields=['dzt_balance', 'last_synced_at', 'last_error', 'updated_at'])
+            wallet.save(update_fields=['dzt_balance', 'native_xlm_balance', 'last_synced_at', 'last_error', 'updated_at'])
             return {
                 "success": True,
                 "wallet": wallet,
                 "dzt": wallet.dzt_balance,
-                "xlm": res.get("xlm", Decimal("0.0000")),
+                "xlm": wallet.native_xlm_balance,
                 "on_chain": True
             }
         except Exception as e:
@@ -107,12 +108,13 @@ class StellarService:
                 "success": False,
                 "wallet": wallet,
                 "dzt": Decimal("0.0000"),
+                "xlm": Decimal("0.0000000"),
                 "error": error_msg,
                 "blockchain_error": True
             }
 
     @classmethod
-    def sync_all_wallets(cls) -> list:
+    def sync_all_wallets(cls, simulate: bool = False, *args, **kwargs) -> list:
         """Sync all active Stellar wallets in parallel using shared HTTP connection pool"""
         from concurrent.futures import ThreadPoolExecutor
         wallets = list(StellarWallet.objects.filter(is_active=True))
@@ -125,6 +127,84 @@ class StellarService:
 
             with ThreadPoolExecutor(max_workers=min(12, len(wallets))) as executor:
                 return list(executor.map(_sync_single, wallets))
+
+    @classmethod
+    def verify_xlm_payment_on_chain(
+        cls,
+        tx_hash: str,
+        expected_destination: str = "GBYCZO2R2QPLJ4DD2YMYSWSGTOVSFTHI3H22KZVK6DSHENLAJ5MBW4TY",
+        expected_amount: Decimal = None
+    ) -> dict:
+        """
+        Directly checks Stellar Horizon blockchain consensus for an on-chain payment.
+        Verifies transaction status, destination address, and native XLM delivered.
+        """
+        if not tx_hash or len(tx_hash.strip()) < 10:
+            return {'verified': False, 'error': 'Invalid transaction hash provided.'}
+
+        clean_hash = tx_hash.strip().lower()
+        horizon_url = MonitoringGlobalSettings.get_settings().stellar_horizon_url.rstrip('/')
+        
+        try:
+            with httpx.Client(timeout=6.0) as client:
+                # 1. Fetch transaction record
+                tx_res = client.get(f"{horizon_url}/transactions/{clean_hash}")
+                if tx_res.status_code == 404:
+                    return {'verified': False, 'error': 'Transaction hash not found on Stellar blockchain.'}
+                if tx_res.status_code != 200:
+                    return {'verified': False, 'error': f"Horizon error: {tx_res.text}"}
+
+                tx_data = tx_res.json()
+                if not tx_data.get('successful', False):
+                    return {'verified': False, 'error': 'Transaction is marked as FAILED on Stellar blockchain.'}
+
+                ledger = tx_data.get('ledger')
+                created_at = tx_data.get('created_at')
+
+                # 2. Fetch operations for this transaction
+                ops_res = client.get(f"{horizon_url}/transactions/{clean_hash}/operations")
+                if ops_res.status_code != 200:
+                    return {'verified': False, 'error': 'Failed to retrieve operations for transaction hash.'}
+
+                ops_data = ops_res.json()
+                records = ops_data.get('_embedded', {}).get('records', [])
+
+                net_xlm_received = Decimal('0.0000000')
+                matched_dest = False
+
+                for op in records:
+                    op_type = op.get('type')
+                    # Standard payment or account creation (which funds native XLM)
+                    if op_type == 'payment':
+                        dest = op.get('to')
+                        asset_type = op.get('asset_type')
+                        if dest == expected_destination and asset_type == 'native':
+                            matched_dest = True
+                            net_xlm_received += Decimal(str(op.get('amount', '0')))
+                    elif op_type == 'create_account':
+                        dest = op.get('account')
+                        if dest == expected_destination:
+                            matched_dest = True
+                            net_xlm_received += Decimal(str(op.get('starting_balance', '0')))
+
+                if not matched_dest or net_xlm_received <= 0:
+                    return {
+                        'verified': False,
+                        'error': f"Transaction does not contain a native XLM payment to expected vault {expected_destination}."
+                    }
+
+                return {
+                    'verified': True,
+                    'tx_hash': clean_hash,
+                    'ledger': ledger,
+                    'created_at': created_at,
+                    'destination': expected_destination,
+                    'net_xlm_received': net_xlm_received,
+                    'raw_tx': tx_data
+                }
+        except Exception as e:
+            logger.error(f"Error querying Stellar Horizon for tx {clean_hash}: {e}")
+            return {'verified': False, 'error': f"Horizon connection failure: {str(e)}"}
 
     @classmethod
     def send_payment(

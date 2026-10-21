@@ -41,6 +41,14 @@ from .api_views import (
     IdoomMonitoringAPIView,
     IdoomWithdrawalsRefillAPIView,
     IdoomRefundRollbackAPIView,
+    IPTVMonitoringAPIView,
+    IPTVWithdrawalsRefillAPIView,
+    IPTVRefundRollbackAPIView,
+    FlexyOperationsMonitoringAPIView,
+    FlexyWithdrawalsRefillAPIView,
+    XLMLiquidityStatusAPIView,
+    XLMCycleStageAdvanceAPIView,
+    XLMCycleVerifyOnChainAPIView,
 )
 from .auth_views import (
     LoginAPIView,
@@ -100,6 +108,20 @@ urlpatterns = [
     path('monitoring/idoom/', IdoomMonitoringAPIView.as_view(), name='api-idoom-monitoring'),
     path('idoom/refill/', IdoomWithdrawalsRefillAPIView.as_view(), name='api-idoom-refill'),
     path('idoom/refund/', IdoomRefundRollbackAPIView.as_view(), name='api-idoom-refund'),
+
+    # Dedicated IPTV (Subscriptions & Vouchers) Monitoring, Refill & Refund
+    path('monitoring/iptv/', IPTVMonitoringAPIView.as_view(), name='api-iptv-monitoring'),
+    path('iptv/refill/', IPTVWithdrawalsRefillAPIView.as_view(), name='api-iptv-refill'),
+    path('iptv/refund/', IPTVRefundRollbackAPIView.as_view(), name='api-iptv-refund'),
+
+    # Dedicated Flexy (Mobilis, Djezzy, Ooredoo) Monitoring & Refill/Sweep
+    path('monitoring/flexy/', FlexyOperationsMonitoringAPIView.as_view(), name='api-flexy-monitoring'),
+    path('flexy/refill/', FlexyWithdrawalsRefillAPIView.as_view(), name='api-flexy-refill'),
+
+    # Dedicated XLM Liquidity Procurement & On-Chain Horizon Verification
+    path('xlm/status/', XLMLiquidityStatusAPIView.as_view(), name='api-xlm-status'),
+    path('xlm/advance-stage/', XLMCycleStageAdvanceAPIView.as_view(), name='api-xlm-advance-stage'),
+    path('xlm/verify-on-chain/', XLMCycleVerifyOnChainAPIView.as_view(), name='api-xlm-verify-on-chain'),
 
     # Binance Live Integration
     path('binance/<str:action_name>/', BinanceLiveAPIView.as_view(), name='api-binance-live'),

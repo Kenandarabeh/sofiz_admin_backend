@@ -27,6 +27,8 @@ from .models import (
     G2BulkReplenishmentWindow,
     IdoomBatchRefill,
     IdoomRefundRecord,
+    IPTVBatchRefill,
+    IPTVRefundRecord,
 )
 from .services.receipt_parser_service import ReceiptParserService
 from .services.stellar_sweep_service import StellarSweepService
@@ -441,6 +443,7 @@ class BaridiMobFundingReceiptSerializer(serializers.ModelSerializer):
 
 
 class ExpenseRecordSerializer(serializers.ModelSerializer):
+    title = serializers.CharField(required=False, allow_blank=True, max_length=200)
     system_type_display = serializers.CharField(source='get_system_type_display', read_only=True)
     category_display = serializers.CharField(source='get_category_display', read_only=True)
 
@@ -461,6 +464,17 @@ class ExpenseRecordSerializer(serializers.ModelSerializer):
             'updated_at',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def create(self, validated_data):
+        if not validated_data.get('title'):
+            category = validated_data.get('category', 'OPERATIONAL')
+            notes = validated_data.get('notes', '')
+            sys_type = validated_data.get('system_type', 'GENERAL')
+            if notes:
+                validated_data['title'] = f"[{sys_type}] {notes[:50]}"
+            else:
+                validated_data['title'] = f"[{sys_type}] {category} Expense"
+        return super().create(validated_data)
 
 
 class ReceiptUploadSerializer(serializers.Serializer):
@@ -658,4 +672,147 @@ class IdoomRefundRecordSerializer(serializers.ModelSerializer):
             'created_at',
         ]
         read_only_fields = ['id', 'created_at']
+
+
+class IPTVBatchRefillSerializer(serializers.ModelSerializer):
+    executed_by_username = serializers.CharField(source='executed_by.username', read_only=True)
+    withdrawal_reference = serializers.CharField(source='withdrawal_record.reference', read_only=True)
+
+    class Meta:
+        model = IPTVBatchRefill
+        fields = [
+            'id',
+            'batch_reference',
+            'total_cards_count',
+            'total_face_value_dzd',
+            'total_cost_dzd',
+            'expected_profit_dzd',
+            'breakdown_json',
+            'uploaded_file_name',
+            'executed_by',
+            'executed_by_username',
+            'withdrawal_record',
+            'withdrawal_reference',
+            'created_at',
+        ]
+        read_only_fields = ['id', 'created_at']
+
+
+class IPTVRefundRecordSerializer(serializers.ModelSerializer):
+    executed_by_username = serializers.CharField(source='executed_by.username', read_only=True)
+
+    class Meta:
+        model = IPTVRefundRecord
+        fields = [
+            'id',
+            'refund_reference',
+            'epay_transaction_id',
+            'client_phone_or_account',
+            'denomination_dzd',
+            'reversed_profit_dzd',
+            'reason',
+            'executed_by',
+            'executed_by_username',
+            'created_at',
+        ]
+        read_only_fields = ['id', 'created_at']
+
+
+# ==============================================================================
+# FLEXY TELECOM SUBSYSTEM SERIALIZERS
+# ==============================================================================
+
+class FlexyFundingTrancheSerializer(serializers.ModelSerializer):
+    executed_by_username = serializers.CharField(source='executed_by.username', read_only=True)
+    source_wallet_name = serializers.CharField(source='source_wallet.name', read_only=True)
+    source_wallet_address = serializers.CharField(source='source_wallet.public_address', read_only=True)
+
+    class Meta:
+        from .models import FlexyFundingTranche
+        model = FlexyFundingTranche
+        fields = [
+            'id',
+            'tranche_reference',
+            'initial_amount_dzd',
+            'remaining_balance_dzd',
+            'bonus_mobilis_pct',
+            'bonus_pixx_pct',
+            'bonus_djezzy_pct',
+            'bonus_ooredoo_pct',
+            'shemsnet_tx_id',
+            'stellar_tx_hash',
+            'source_wallet',
+            'source_wallet_name',
+            'source_wallet_address',
+            'withdrawal_record',
+            'executed_by',
+            'executed_by_username',
+            'is_active',
+            'notes',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class FlexyOperationRecordSerializer(serializers.ModelSerializer):
+    tranche_ref = serializers.CharField(source='tranche.tranche_reference', read_only=True)
+
+    class Meta:
+        from .models import FlexyOperationRecord
+        model = FlexyOperationRecord
+        fields = [
+            'id',
+            'operation_reference',
+            'shemsnet_op_id',
+            'operator',
+            'phone_number',
+            'face_amount_dzd',
+            'procurement_cost_dzd',
+            'net_profit_dzd',
+            'applied_bonus_pct',
+            'tranche',
+            'tranche_ref',
+            'is_swept',
+            'sweep_batch',
+            'status',
+            'raw_response',
+            'created_at',
+        ]
+        read_only_fields = ['id', 'created_at']
+
+
+class FlexyDualSweepBatchSerializer(serializers.ModelSerializer):
+    executed_by_username = serializers.CharField(source='executed_by.username', read_only=True)
+    source_wallet_name = serializers.CharField(source='source_wallet.name', read_only=True)
+    collection_wallet_name = serializers.CharField(source='collection_wallet.name', read_only=True)
+    profit_wallet_name = serializers.CharField(source='profit_wallet.name', read_only=True)
+
+    class Meta:
+        from .models import FlexyDualSweepBatch
+        model = FlexyDualSweepBatch
+        fields = [
+            'id',
+            'batch_reference',
+            'operator',
+            'total_volume_dzd',
+            'total_capital_dzd',
+            'total_profit_dzd',
+            'source_wallet',
+            'source_wallet_name',
+            'collection_wallet',
+            'collection_wallet_name',
+            'profit_wallet',
+            'profit_wallet_name',
+            'collection_tx_hash',
+            'profit_tx_hash',
+            'executed_by',
+            'executed_by_username',
+            'status',
+            'notes',
+            'created_at',
+        ]
+        read_only_fields = ['id', 'created_at']
+
+
 
