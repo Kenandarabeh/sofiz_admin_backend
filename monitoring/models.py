@@ -71,6 +71,7 @@ class SubSystemType(models.TextChoices):
     IDOOM = 'IDOOM', 'Idoom Working Capital & Vouchers'
     IPTV = 'IPTV', 'IPTV Working Capital & Subscriptions'
     FLEXY = 'FLEXY', 'Flexy Working Capital & Telecom Operations'
+    XLM = 'XLM', 'Stellar XLM Liquidity Procurement'
     TREASURY = 'TREASURY', 'Central Treasury Reserve (Stellar DZT)'
     ALL = 'ALL', 'All Sub-Systems (Universal Authorized)'
 
