@@ -364,10 +364,14 @@ class StellarWalletViewSet(viewsets.ModelViewSet):
 
     def list(self, request, *args, **kwargs):
         """
-        Always perform live on-chain sync from Stellar Horizon before listing,
-        guaranteeing that every wallet balance displayed is 100% on-chain truth.
+        List Stellar wallets directly from PostgreSQL database in high-speed mode (< 20ms).
+        Live on-chain sync is executed only when explicitly requested (?sync=true).
         """
-        if request.query_params.get('no_sync', 'false').lower() != 'true':
+        sync_requested = (
+            request.query_params.get('sync', 'false').lower() == 'true'
+            or request.query_params.get('sync_live', 'false').lower() == 'true'
+        )
+        if sync_requested:
             try:
                 StellarService.sync_all_wallets()
             except Exception as e:
@@ -2573,12 +2577,20 @@ class GamingMonitoringAPIView(APIView):
                 logger.warning(f"Error during Salah Gaming Account auto-sync: {e}")
 
         settings = MonitoringGlobalSettings.get_settings()
-        # Always sync Gaming Wallets directly from live Stellar Horizon on-chain
-        for gw in GamingWallet.objects.filter(is_active=True):
+
+        # Only sync live Stellar on-chain if explicit auto_sync (?sync=true) is requested
+        if auto_sync:
             try:
-                StellarService.sync_wallet(gw)
+                from concurrent.futures import ThreadPoolExecutor
+                import httpx
+                wallets_to_sync = list(GamingWallet.objects.filter(is_active=True))
+                if wallets_to_sync:
+                    with httpx.Client(timeout=3.5) as client:
+                        with ThreadPoolExecutor(max_workers=min(8, len(wallets_to_sync))) as executor:
+                            list(executor.map(lambda gw: StellarService.sync_wallet(gw, client=client), wallets_to_sync))
             except Exception as e:
-                logger.warning(f"Failed live sync for gaming wallet {gw.name}: {e}")
+                logger.warning(f"Failed parallel live sync for gaming wallets: {e}")
+
         gaming_wallets = GamingWallet.objects.filter(is_active=True)
         suppliers = SupplierAccount.objects.filter(is_active=True)
         gaming_capital = float(settings.effective_gaming_capital)
@@ -2591,22 +2603,14 @@ class GamingMonitoringAPIView(APIView):
         p2p_audit = P2PRateService.get_effective_p2p_rate('GAMING')
         p2p_rate_dec = p2p_audit['rate']
 
-        for sup in suppliers:
-            sup.update_dzd_equivalent(p2p_rate_dec)
-            sup.save(update_fields=['balance_dzd_equivalent'])
-
         total_g2bulk_usd = float(suppliers.aggregate(total=Sum('balance_usd'))['total'] or 0)
-        total_g2bulk_dzd = float(suppliers.aggregate(total=Sum('balance_dzd_equivalent'))['total'] or 0)
+        total_g2bulk_dzd = round(total_g2bulk_usd * float(p2p_rate_dec), 2)
 
         # Aggregate Binance Corporate USDT Accounts
         from .models import BinanceAccount, BaridiMobFundingReceipt, FundingCycleStatus, WithdrawalRecord, WithdrawalStage
         binance_accounts = BinanceAccount.objects.filter(is_active=True)
-        for ba in binance_accounts:
-            ba.update_dzd_equivalent(p2p_rate_dec)
-            ba.save(update_fields=['balance_dzd_equivalent'])
-
         total_binance_usdt = float(binance_accounts.aggregate(total=Sum('balance_usdt'))['total'] or 0)
-        total_binance_dzd = float(binance_accounts.aggregate(total=Sum('balance_dzd_equivalent'))['total'] or 0)
+        total_binance_dzd = round(total_binance_usdt * float(p2p_rate_dec), 2)
 
         # Aggregate In-Transit Funding (Active P2P acquisitions & allocated disbursements)
         pending_receipts = BaridiMobFundingReceipt.objects.filter(

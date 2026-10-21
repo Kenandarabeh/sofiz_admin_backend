@@ -128,8 +128,17 @@ class CustomTokenRefreshView(TokenRefreshView):
         serializer = self.get_serializer(data=request.data)
         try:
             serializer.is_valid(raise_exception=True)
-        except TokenError as e:
-            raise InvalidToken(e.args[0])
+        except (TokenError, User.DoesNotExist):
+            return Response({
+                'detail': 'Token is invalid or user no longer exists.',
+                'code': 'token_not_valid'
+            }, status=status.HTTP_401_UNAUTHORIZED)
+        except Exception as e:
+            logger.warning(f"Unexpected error during token refresh: {e}")
+            return Response({
+                'detail': 'Token refresh failed.',
+                'code': 'token_not_valid'
+            }, status=status.HTTP_401_UNAUTHORIZED)
 
         data = serializer.validated_data
         jwt_lifetime = settings.SIMPLE_JWT.get('ACCESS_TOKEN_LIFETIME', timedelta(days=1))

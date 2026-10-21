@@ -822,8 +822,8 @@ class BalanceEngine:
         db_game_profit = GameProfitRecord.objects.aggregate(t=Sum('net_profit_dzd'))['t'] or Decimal('0.00')
         g_profit = settings.total_live_profits_dzd if settings.total_live_profits_dzd > 0 else (db_game_profit if db_game_profit > 0 else Decimal('0.00'))
 
-        g2bulk_dzd = sum(s.balance_dzd_equivalent for s in SupplierAccount.objects.filter(is_active=True))
-        binance_dzd = sum(b.balance_dzd_equivalent for b in BinanceAccount.objects.filter(is_active=True))
+        g2bulk_dzd = SupplierAccount.objects.filter(is_active=True).aggregate(t=Sum('balance_dzd_equivalent'))['t'] or Decimal('0.00')
+        binance_dzd = BinanceAccount.objects.filter(is_active=True).aggregate(t=Sum('balance_dzd_equivalent'))['t'] or Decimal('0.00')
         g_wallets_dzt = StellarWallet.objects.filter(family=WalletFamily.GAME, is_active=True).aggregate(t=Sum('dzt_balance'))['t'] or Decimal('0.00')
         g_expenses = GamingExpenseRecord.objects.aggregate(t=Sum('amount_dzd'))['t'] or Decimal('0.00')
 
@@ -838,7 +838,7 @@ class BalanceEngine:
         esim_cap = settings.effective_esim_capital
         esim_profit = (eSIMOrderRecord.objects.filter(status='COMPLETED').aggregate(t=Sum('net_profit_dzd'))['t'] or Decimal('0.00')).quantize(Decimal('0.01'))
 
-        bybit_dzd = sum(b.balance_dzd_equivalent for b in BybitAccount.objects.filter(is_active=True))
+        bybit_dzd = BybitAccount.objects.filter(is_active=True).aggregate(t=Sum('balance_dzd_equivalent'))['t'] or Decimal('0.00')
         airalo_dzd = sum(a.balance_dzd_equivalent for a in AiraloAccount.objects.filter(is_active=True))
         esim_wallets_dzt = StellarWallet.objects.filter(family=WalletFamily.ESIM, is_active=True).aggregate(t=Sum('dzt_balance'))['t'] or Decimal('0.00')
         esim_expenses = ExpenseRecord.objects.filter(system_type=OperationalFamily.ESIM).aggregate(t=Sum('amount_dzd'))['t'] or Decimal('0.00')
