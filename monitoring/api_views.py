@@ -1937,6 +1937,20 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
 
                 instance.save()
 
+        # Real-time Quota Refill Notification to Soufiane (Gaming Manager) & Admin
+        try:
+            from .services.quota_notification_service import notify_quota_refill
+            notify_quota_refill(
+                subsystem=instance.system_type,
+                amount_dzd=instance.amount_dzd,
+                operator=request.user if (request.user and request.user.is_authenticated) else "Walid (Withdrawal Officer)",
+                reference=instance.reference or instance.id,
+                notes=instance.notes,
+                async_send=True,
+            )
+        except Exception as e:
+            logger.error(f"[WithdrawalRecordViewSet] Quota email dispatch failed: {e}")
+
         headers = self.get_success_headers(serializer.data)
         return Response({
             'success': True,
@@ -5758,6 +5772,20 @@ class IdoomWithdrawalsRefillAPIView(APIView):
                 withdrawal_record=withdrawal,
             )
 
+        # Real-time Quota Refill Notification to Soufiane & Admin
+        try:
+            from .services.quota_notification_service import notify_quota_refill
+            notify_quota_refill(
+                subsystem='IDOOM',
+                amount_dzd=total_cost,
+                operator=request.user if (request.user and request.user.is_authenticated) else "Walid (Withdrawal Officer)",
+                reference=batch_ref,
+                notes=f"Procurement of {total_count} Idoom voucher cards. Total Cost: {total_cost:,.2f} DZD.",
+                async_send=True,
+            )
+        except Exception as e:
+            logger.error(f"[IdoomRefillView] Quota email dispatch failed: {e}")
+
         return Response({
             "success": True,
             "message": f"Successfully processed Idoom refill batch #{batch_ref} with {total_count} cards.",
@@ -6249,6 +6277,20 @@ class IPTVWithdrawalsRefillAPIView(APIView):
                 withdrawal_record=withdrawal,
             )
 
+        # Real-time Quota Refill Notification to Soufiane & Admin
+        try:
+            from .services.quota_notification_service import notify_quota_refill
+            notify_quota_refill(
+                subsystem='IPTV',
+                amount_dzd=total_cost,
+                operator=request.user if (request.user and request.user.is_authenticated) else "Walid (Withdrawal Officer)",
+                reference=batch_ref,
+                notes=f"Procurement of {total_count} IPTV subscription vouchers. Total Cost: {total_cost:,.2f} DZD.",
+                async_send=True,
+            )
+        except Exception as e:
+            logger.error(f"[IPTVRefillView] Quota email dispatch failed: {e}")
+
         return Response({
             "success": True,
             "message": f"Successfully processed IPTV refill batch #{batch_ref} with {total_count} subscriptions.",
@@ -6672,6 +6714,20 @@ class FlexyWithdrawalsRefillAPIView(APIView):
                 source_wallet_id=source_wallet_id,
                 executed_by_user=request.user if request.user.is_authenticated else None
             )
+            if res.get('success'):
+                try:
+                    from .services.quota_notification_service import notify_quota_refill
+                    notify_quota_refill(
+                        subsystem='FLEXY',
+                        amount_dzd=amount_dzt,
+                        operator=request.user if (request.user and request.user.is_authenticated) else "Walid (Withdrawal Officer)",
+                        reference=res.get('reference') or res.get('topup_id') or 'FLEXY-TOPUP',
+                        notes=f"Shemsnet Flexy balance topup. New Shemsnet Solde: {res.get('new_balance', 'N/A')} DZD.",
+                        async_send=True,
+                    )
+                except Exception as e:
+                    logger.error(f"[FlexyRefillAPIView] Quota email dispatch failed: {e}")
+
             status_code = status.HTTP_200_OK if res.get('success') else status.HTTP_400_BAD_REQUEST
             return Response(res, status=status_code)
 

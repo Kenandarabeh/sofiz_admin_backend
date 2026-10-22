@@ -128,9 +128,9 @@ CSRF_TRUSTED_ORIGINS = [
 
 FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5172')
 
-# Email Configuration - STRICTLY DISABLED PER USER DIRECTIVE UNTIL EXPLICITLY RE-ENABLED
-EMAIL_BACKEND = 'django.core.mail.backends.dummy.EmailBackend'
-EMAIL_ALERTS_ENABLED = False
+# Email Configuration - Enabled for Operational Quota Refill Alerts & System Notifications
+EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.smtp.EmailBackend')
+EMAIL_ALERTS_ENABLED = True
 EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
 EMAIL_PORT = int(os.getenv('EMAIL_PORT', 587))
 EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'True') == 'True'
@@ -141,6 +141,8 @@ EMAIL_HOST_PASSWORD = _raw_email_pass.replace(' ', '') if _raw_email_pass else '
 DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'eurlsofizpay@gmail.com')
 DEFAULT_ERROR_ALERT_EMAIL = os.getenv('DEFAULT_ERROR_ALERT_EMAIL', 'rabeh2020ken@gmail.com')
 ADMIN_ALERT_EMAILS = [e.strip() for e in os.getenv('ADMIN_ALERT_EMAILS', 'rabeh2020ken@gmail.com,admin@sofizpay.com').split(',') if e.strip()]
+SOUFIANE_NOTIFICATION_EMAIL = os.getenv('SOUFIANE_NOTIFICATION_EMAIL', 'gaming@sofizpay.com')
+ADMIN_NOTIFICATION_EMAIL = os.getenv('ADMIN_NOTIFICATION_EMAIL', 'rabeh2020ken@gmail.com')
 
 # Django REST Framework Configuration
 REST_FRAMEWORK = {
