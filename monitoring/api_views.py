@@ -1334,7 +1334,7 @@ class IsAdminOrWalidTreasury(permissions.BasePermission):
        or mission_role in [TREASURY_OFFICER, WITHDRAWAL_OPERATOR, ALL_FAMILIES],
        or groups ['Withdrawal Operations Officer', 'Treasury & P2P Officer']).
     """
-    message = "Access restricted: Only System Administrators and Treasury Officers (Walid) are authorized to access operational expenses."
+    message = "Access restricted: Only System Administrators and Treasury Officers are authorized to access operational expenses."
 
     def has_permission(self, request, view):
         user = request.user
@@ -1363,10 +1363,38 @@ class IsAdminOrWalidTreasury(permissions.BasePermission):
         return False
 
 
+class IsSuperAdminForExpenseDelete(permissions.BasePermission):
+    """
+    Institutional Role-Based Access Control:
+    Restricts delete/destroy operations on ExpenseRecord strictly to Super Administrators.
+    """
+    message = "Permission denied: Expense record deletion is strictly restricted to the Super Administrator."
+
+    def has_permission(self, request, view):
+        if view.action in ['destroy', 'delete']:
+            user = request.user
+            if not user or not user.is_authenticated:
+                return False
+            return bool(
+                user.is_superuser or
+                user.username in ['admin', 'admin_operations']
+            )
+        return True
+
+
 class ExpenseRecordViewSet(viewsets.ModelViewSet):
     queryset = ExpenseRecord.objects.all().order_by('-expense_date', '-created_at')
     serializer_class = ExpenseRecordSerializer
-    permission_classes = [IsAdminOrWalidTreasury]
+    permission_classes = [IsAdminOrWalidTreasury, IsSuperAdminForExpenseDelete]
+
+    def destroy(self, request, *args, **kwargs):
+        user = request.user
+        if not user or not user.is_authenticated or not (user.is_superuser or user.username in ['admin', 'admin_operations']):
+            return Response(
+                {"detail": "Permission denied: Expense record deletion is strictly restricted to the Super Administrator."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        return super().destroy(request, *args, **kwargs)
 
     def get_queryset(self):
         qs = super().get_queryset()
