@@ -128,17 +128,17 @@ class CustomTokenRefreshView(TokenRefreshView):
         serializer = self.get_serializer(data=request.data)
         try:
             serializer.is_valid(raise_exception=True)
-        except (TokenError, User.DoesNotExist):
+        except (TokenError, InvalidToken, User.DoesNotExist):
             return Response({
                 'detail': 'Token is invalid or user no longer exists.',
                 'code': 'token_not_valid'
             }, status=status.HTTP_401_UNAUTHORIZED)
         except Exception as e:
-            logger.warning(f"Unexpected error during token refresh: {e}")
+            logger.error(f"Unexpected server error during token refresh: {e}")
             return Response({
-                'detail': 'Token refresh failed.',
-                'code': 'token_not_valid'
-            }, status=status.HTTP_401_UNAUTHORIZED)
+                'detail': 'Server error during token refresh. Please retry.',
+                'code': 'server_error'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         data = serializer.validated_data
         jwt_lifetime = settings.SIMPLE_JWT.get('ACCESS_TOKEN_LIFETIME', timedelta(days=1))
@@ -180,22 +180,21 @@ class LogoutAPIView(APIView):
         refresh_token = request.data.get('refresh')
         if not refresh_token:
             return Response({
-                'success': False,
-                'error': "Refresh token is required to logout."
-            }, status=status.HTTP_400_BAD_REQUEST)
+                'success': True,
+                'message': "Logged out."
+            }, status=status.HTTP_200_OK)
 
         try:
             token = RefreshToken(refresh_token)
             token.blacklist()
-            return Response({
-                'success': True,
-                'message': "Successfully logged out. Refresh token has been revoked."
-            }, status=status.HTTP_200_OK)
-        except Exception as e:
-            return Response({
-                'success': False,
-                'error': f"Failed to revoke token: {str(e)}"
-            }, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            # Token already blacklisted, expired, or invalid - treat logout as successful
+            pass
+
+        return Response({
+            'success': True,
+            'message': "Successfully logged out."
+        }, status=status.HTTP_200_OK)
 
 
 class ChangePasswordAPIView(APIView):

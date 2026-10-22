@@ -123,6 +123,25 @@ class G2BulkService:
             supplier.last_error = None
             supplier.save()
 
+            # Record time-series audit tracking snapshot in database
+            try:
+                from .account_monitoring_service import AccountMonitoringService
+                from ..models import AccountMonitoringChannel
+                AccountMonitoringService.record_snapshot(
+                    channel=AccountMonitoringChannel.G2BULK,
+                    account_label="G2Bulk Wholesale Inventory",
+                    activity="Gaming",
+                    source_type="G2Bulk",
+                    current_balance=supplier.balance_usd,
+                    currency="USD",
+                    current_balance_dzd=supplier.balance_dzd_equivalent,
+                    trigger_type="LIVE_API_SYNC",
+                    last_synced_at=supplier.last_synced_at,
+                    notes=f"Live G2Bulk API sync snapshot: ${supplier.balance_usd:,.2f} USD ({supplier.balance_dzd_equivalent:,.2f} DZD)",
+                )
+            except Exception as snap_err:
+                logger.debug(f"Snapshot tracking note: {snap_err}")
+
             return {
                 "success": True,
                 "is_simulation": False,

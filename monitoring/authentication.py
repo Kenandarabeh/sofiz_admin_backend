@@ -7,6 +7,7 @@ import logging
 from django.contrib.auth.models import User
 from rest_framework.authentication import BaseAuthentication
 from rest_framework_simplejwt.authentication import JWTAuthentication
+from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework.exceptions import AuthenticationFailed
 from .models import MonitoringGlobalSettings
 
@@ -32,9 +33,12 @@ class CombinedAPIKeyOrJWTAuthentication(BaseAuthentication):
                 jwt_result = self.jwt_auth.authenticate(request)
                 if jwt_result is not None:
                     return jwt_result
-            except Exception as e:
+            except (AuthenticationFailed, InvalidToken, TokenError) as e:
                 # If Bearer token explicitly provided but invalid, fail fast
                 raise AuthenticationFailed(f"Invalid or expired JWT token: {str(e)}")
+            except Exception as e:
+                logger.error(f"System/DB error during JWT authentication: {e}")
+                raise
 
         # 2. Check API Key header or query param
         api_key = (

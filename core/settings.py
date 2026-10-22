@@ -74,6 +74,7 @@ if DB_NAME and DB_USER and DB_HOST:
             'PASSWORD': DB_PASS,
             'HOST': DB_HOST,
             'PORT': DB_PORT,
+            'CONN_MAX_AGE': 0,
         }
     }
 else:

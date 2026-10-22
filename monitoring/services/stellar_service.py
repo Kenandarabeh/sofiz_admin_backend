@@ -7,36 +7,65 @@ import uuid
 from decimal import Decimal
 from django.utils import timezone
 import httpx
+import time
 from ..models import StellarWallet, MonitoringGlobalSettings, WalletSweepLog, SweepStatus, SweepType, WalletRole
 
 logger = logging.getLogger(__name__)
 
+# Institutional Persistent Connection Pool for Stellar Horizon
+_HTTP_LIMITS = httpx.Limits(max_keepalive_connections=25, max_connections=35)
+_HTTP_TIMEOUT = httpx.Timeout(4.5, connect=3.0)
+_SHARED_CLIENT = None
+
+
+def get_shared_client() -> httpx.Client:
+    """Provides a thread-safe persistent HTTP/1.1 client with keep-alive connections to Stellar Horizon"""
+    global _SHARED_CLIENT
+    if _SHARED_CLIENT is None or _SHARED_CLIENT.is_closed:
+        _SHARED_CLIENT = httpx.Client(limits=_HTTP_LIMITS, timeout=_HTTP_TIMEOUT)
+    return _SHARED_CLIENT
+
 
 class StellarService:
+    # 6.0 seconds consensus window matching Stellar SCP 5-second ledger closure time
+    _consensus_cache = {}  # {public_address: (timestamp, dict)}
+    _CACHE_WINDOW_SEC = 6.0
+
     @classmethod
     def get_account_balances(
         cls,
         public_address: str,
         horizon_url: str = None,
-        client: httpx.Client = None
+        target_dzt_code: str = None,
+        target_dzt_issuer: str = None,
+        client: httpx.Client = None,
+        force: bool = False
     ) -> dict:
         """
-        Query public account info directly from live Stellar Horizon API.
+        Query public account info directly from live Stellar Horizon API on-chain.
         Returns:
             dict: {"dzt": Decimal, "xlm": Decimal, "all_assets": list, "raw": dict}
         """
-        settings = MonitoringGlobalSettings.get_settings()
-        base_url = horizon_url or settings.stellar_horizon_url.rstrip('/')
-        url = f"{base_url}/accounts/{public_address}"
-        
-        target_dzt_code = settings.dzt_asset_code.upper()
-        target_dzt_issuer = settings.dzt_asset_issuer.strip()
+        now = time.time()
+        if not force and public_address in cls._consensus_cache:
+            cached_ts, cached_data = cls._consensus_cache[public_address]
+            if now - cached_ts < cls._CACHE_WINDOW_SEC:
+                return cached_data
 
-        if client:
-            response = client.get(url)
+        if not horizon_url or target_dzt_code is None or target_dzt_issuer is None:
+            settings = MonitoringGlobalSettings.get_settings()
+            base_url = horizon_url or settings.stellar_horizon_url.rstrip('/')
+            dzt_code = (target_dzt_code or settings.dzt_asset_code).upper()
+            dzt_issuer = (target_dzt_issuer if target_dzt_issuer is not None else settings.dzt_asset_issuer).strip()
         else:
-            with httpx.Client(timeout=3.5) as http_client:
-                response = http_client.get(url)
+            base_url = horizon_url.rstrip('/')
+            dzt_code = target_dzt_code.upper()
+            dzt_issuer = target_dzt_issuer.strip()
+
+        url = f"{base_url}/accounts/{public_address}"
+
+        http_client = client or get_shared_client()
+        response = http_client.get(url)
 
         if response.status_code == 404:
             raise ValueError(f"Stellar account not found / not funded: {public_address}")
@@ -63,27 +92,28 @@ class StellarService:
                 all_assets.append({"code": code, "issuer": issuer, "balance": balance_val})
                 
                 # Match DZT asset code and issuer if specified
-                if code.upper() == target_dzt_code:
-                    if not target_dzt_issuer or issuer == target_dzt_issuer:
+                if code.upper() == dzt_code:
+                    if not dzt_issuer or issuer == dzt_issuer:
                         dzt_balance += balance_val
 
-        return {
+        result = {
             "dzt": dzt_balance,
             "xlm": xlm_balance,
             "all_assets": all_assets,
             "sequence": data.get("sequence"),
             "subentry_count": data.get("subentry_count"),
         }
+        cls._consensus_cache[public_address] = (now, result)
+        return result
 
     @classmethod
-    def sync_wallet(cls, wallet: StellarWallet, client: httpx.Client = None) -> dict:
+    def sync_wallet(cls, wallet: StellarWallet, client: httpx.Client = None, force: bool = False) -> dict:
         """
         Sync a single Stellar wallet directly from live Stellar Horizon on-chain API.
         Strict institutional standard: Blockchain consensus is the single source of truth.
-        Zero database fallback or synthetic balances. If account is missing/errored, report error explicitly.
         """
         try:
-            res = cls.get_account_balances(wallet.public_address, client=client)
+            res = cls.get_account_balances(wallet.public_address, client=client, force=force)
             # Blockchain is absolute truth: always record exact on-chain balance
             wallet.dzt_balance = res["dzt"]
             wallet.native_xlm_balance = res.get("xlm", Decimal("0.0000000"))
@@ -103,7 +133,10 @@ class StellarService:
             wallet.dzt_balance = Decimal("0.0000")
             wallet.last_synced_at = timezone.now()
             wallet.last_error = f"Blockchain Error: {error_msg}"
-            wallet.save(update_fields=['dzt_balance', 'last_synced_at', 'last_error', 'updated_at'])
+            try:
+                wallet.save(update_fields=['dzt_balance', 'last_synced_at', 'last_error', 'updated_at'])
+            except Exception:
+                pass
             return {
                 "success": False,
                 "wallet": wallet,
@@ -114,19 +147,99 @@ class StellarService:
             }
 
     @classmethod
-    def sync_all_wallets(cls, simulate: bool = False, *args, **kwargs) -> list:
-        """Sync all active Stellar wallets in parallel using shared HTTP connection pool"""
-        from concurrent.futures import ThreadPoolExecutor
-        wallets = list(StellarWallet.objects.filter(is_active=True))
+    def sync_wallets_parallel(cls, wallets: list, force: bool = False) -> list:
+        """
+        Sync a list of Stellar wallets directly from live Stellar Horizon on-chain API in parallel.
+        Uses persistent HTTP connection pool and concurrent ThreadPoolExecutor for HTTP queries ONLY.
+        Database persistence occurs in the calling thread to guarantee zero PostgreSQL connection leaks.
+        """
         if not wallets:
             return []
+        from concurrent.futures import ThreadPoolExecutor
 
-        with httpx.Client(timeout=3.5) as shared_client:
-            def _sync_single(w):
-                return cls.sync_wallet(w, client=shared_client)
+        client = get_shared_client()
+        settings = MonitoringGlobalSettings.get_settings()
+        horizon_url = settings.stellar_horizon_url.rstrip('/')
+        target_dzt_code = settings.dzt_asset_code.upper()
+        target_dzt_issuer = settings.dzt_asset_issuer.strip()
 
-            with ThreadPoolExecutor(max_workers=min(12, len(wallets))) as executor:
-                return list(executor.map(_sync_single, wallets))
+        def _fetch_balance(w):
+            try:
+                res = cls.get_account_balances(
+                    w.public_address,
+                    horizon_url=horizon_url,
+                    target_dzt_code=target_dzt_code,
+                    target_dzt_issuer=target_dzt_issuer,
+                    client=client,
+                    force=force
+                )
+                return {"success": True, "res": res}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+            finally:
+                try:
+                    from django import db
+                    db.connections.close_all()
+                except Exception:
+                    pass
+
+        max_workers = min(4, len(wallets))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            fetch_results = list(executor.map(_fetch_balance, wallets))
+
+        now = timezone.now()
+        output_results = []
+        wallets_to_save = []
+        for wallet, item in zip(wallets, fetch_results):
+            if item.get("success"):
+                res = item["res"]
+                wallet.dzt_balance = res["dzt"]
+                wallet.native_xlm_balance = res.get("xlm", Decimal("0.0000000"))
+                wallet.last_synced_at = now
+                wallet.last_error = None
+                output_results.append({
+                    "success": True,
+                    "wallet": wallet,
+                    "dzt": wallet.dzt_balance,
+                    "xlm": wallet.native_xlm_balance,
+                    "on_chain": True
+                })
+            else:
+                err = item.get("error", "Unknown error")
+                logger.warning(f"Live Stellar Horizon sync failed for wallet '{wallet.name}' ({wallet.public_address}): {err}")
+                wallet.dzt_balance = Decimal("0.0000")
+                wallet.last_synced_at = now
+                wallet.last_error = f"Blockchain Error: {err}"
+                output_results.append({
+                    "success": False,
+                    "wallet": wallet,
+                    "dzt": Decimal("0.0000"),
+                    "xlm": Decimal("0.0000000"),
+                    "error": err,
+                    "blockchain_error": True
+                })
+            wallets_to_save.append(wallet)
+
+        # Persist updated balances in database using caller's connection
+        try:
+            StellarWallet.objects.bulk_update(
+                wallets_to_save,
+                ['dzt_balance', 'native_xlm_balance', 'last_synced_at', 'last_error', 'updated_at']
+            )
+        except Exception:
+            for w in wallets_to_save:
+                try:
+                    w.save(update_fields=['dzt_balance', 'native_xlm_balance', 'last_synced_at', 'last_error', 'updated_at'])
+                except Exception as save_err:
+                    logger.error(f"Failed to persist wallet {w.name} in DB: {save_err}")
+
+        return output_results
+
+    @classmethod
+    def sync_all_wallets(cls, force: bool = False, *args, **kwargs) -> list:
+        """Sync all active Stellar wallets in parallel directly from live Stellar Horizon on-chain"""
+        wallets = list(StellarWallet.objects.filter(is_active=True))
+        return cls.sync_wallets_parallel(wallets, force=force)
 
     @classmethod
     def verify_xlm_payment_on_chain(

@@ -4,11 +4,14 @@ Computes real-time cryptographic health, gateway balances, and workflow metrics
 for the institutional Django Admin Dashboard and Vite Terminal synchronization.
 """
 from decimal import Decimal
+from django.db import models
 from django.db.models import Sum
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from ..models import (
     StellarWallet,
+    WalletFamily,
+    WalletRole,
     SupplierAccount,
     BaridiMobAccount,
     WithdrawalRecord,
@@ -33,6 +36,7 @@ class AdminStatsService:
 
         # 1. Cryptographic Wallets & Keypair Health (PK & SK)
         active_wallets = StellarWallet.objects.filter(is_active=True)
+        total_wallets = active_wallets.count()
         total_dzt = float(active_wallets.exclude(
             models.Q(family=WalletFamily.TREASURY) | models.Q(role=WalletRole.VAULT) | models.Q(name__icontains='Treasury')
         ).aggregate(total=Sum('dzt_balance'))['total'] or 0)
@@ -47,7 +51,12 @@ class AdminStatsService:
             else:
                 wallets_missing_sk += 1
 
-        # 2. Institutional Gateway Liquidity
+        # 2. Institutional Gateway Liquidity - Always sync G2Bulk live from official API
+        try:
+            from .g2bulk_service import G2BulkService
+            G2BulkService.sync_supplier()
+        except Exception:
+            pass
         g2bulk = SupplierAccount.objects.filter(provider='G2BULK').first()
         g2b_usd = float(g2bulk.balance_usd) if g2bulk else 0.0
         g2b_dzd = float(g2bulk.balance_dzd_equivalent) if g2bulk else 0.0

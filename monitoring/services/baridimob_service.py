@@ -88,7 +88,7 @@ class BaridiMobService:
                     "account_label": acc.account_email or default_label,
                     "account_name": acc.account_name,
                     "system_type": acc.system_type,
-                    "account": acc,
+                    "account_id": acc.id if acc else None,
                     "is_cached": True,
                 }
 
@@ -110,7 +110,7 @@ class BaridiMobService:
                         "account_label": (acc.account_email if acc else default_label) or default_label,
                         "account_name": acc.account_name if acc else default_name,
                         "system_type": acc.system_type if acc else system_type,
-                        "account": acc,
+                        "account_id": acc.id if acc else None,
                         "is_cached": True,
                         "in_cooldown": True,
                         "cooldown_remaining_sec": cooldown_remaining,
@@ -194,13 +194,16 @@ class BaridiMobService:
                     logger.info(f"Live BaridiMob balance synced for [{system_type}] ({acc.account_name}): {total_balance:,.2f} DZD")
                     return {
                         "success": True,
+                        "is_live": True,
+                        "api_status": "LIVE",
                         "account_key": target_key,
                         "balance_dzd": total_balance,
                         "account_number": acc_number,
                         "account_label": account_label,
                         "account_name": acc.account_name,
                         "system_type": acc.system_type,
-                        "account": acc
+                        "account_id": acc.id if acc else None,
+                        "last_synced_at": now.isoformat()
                     }
                 else:
                     last_error = f"HTTP {res.status_code}: {res.text}"
@@ -215,15 +218,18 @@ class BaridiMobService:
             logger.info(f"Live BaridiMob balance sync for [{target_key}] failure: preserving audited card balance {acc.balance_dzd:,.2f} DZD ({last_error})")
             return {
                 "success": False,
+                "is_live": False,
+                "api_status": "ERROR",
                 "account_key": target_key,
                 "balance_dzd": acc.balance_dzd,
                 "account_number": acc.rip_number,
                 "account_label": acc.account_email or default_label,
                 "account_name": acc.account_name,
                 "system_type": acc.system_type,
-                "account": acc,
+                "account_id": acc.id if acc else None,
                 "fallback": True,
-                "error": last_error,
+                "error": last_error or "Algérie Poste BaridiMob login/connection failure",
+                "last_synced_at": acc.last_synced_at.isoformat() if acc.last_synced_at else None,
             }
 
         logger.error(f"Live BaridiMob balance sync for [{target_key}] unavailable: {last_error}")
@@ -251,7 +257,7 @@ class BaridiMobService:
             "account_label": acc.account_email if acc else target_key,
             "account_name": acc.account_name if acc else f"BaridiMob {target_key}",
             "system_type": system_type,
-            "account": acc,
+            "account_id": acc.id if acc else None,
             "is_cached": True
         }
 
@@ -577,20 +583,19 @@ class BaridiMobService:
             last_error = str(e)
 
         if not res_data or not res_data.get("success"):
-            logger.info(f"Live ECCP balance sync for [{target_account}] timed out ({last_error}). Falling back to verified stable balance.")
-            fallback_solde = acc.eccp_balance_dzd if (acc and acc.eccp_balance_dzd and acc.eccp_balance_dzd > Decimal("0.00") and acc.eccp_balance_dzd < Decimal("10000000.00")) else Decimal("0.00")
-            if acc:
-                acc.eccp_last_synced_at = now
-                acc.save(update_fields=['eccp_last_synced_at'])
+            logger.warning(f"Live ECCP balance sync for [{target_account}] failed ({last_error}). Preserving actual audited balance and timestamp.")
+            fallback_solde = acc.eccp_balance_dzd if (acc and acc.eccp_balance_dzd is not None) else Decimal("0.00")
+            real_last_synced = acc.eccp_last_synced_at.isoformat() if (acc and acc.eccp_last_synced_at) else None
             return {
-                "success": True,
-                "is_simulation": False,
+                "success": False,
+                "is_live": False,
                 "is_cached": True,
-                "error": last_error,
+                "api_status": "ERROR",
+                "error": last_error or "Algérie Poste ECCP server unreachable / request timed out",
                 "account_key": target_account,
                 "eccp_balance_dzd": float(fallback_solde),
                 "solde_str": f"{fallback_solde:,.2f}",
-                "last_synced_at": now.isoformat()
+                "last_synced_at": real_last_synced
             }
 
         raw_solde = res_data.get("balance_dzd") or res_data.get("solde") or "0.00"
@@ -609,7 +614,9 @@ class BaridiMobService:
         logger.info(f"ECCP balance synced for [{target_account}]: {solde_dec:,.2f} DZD")
         return {
             "success": True,
+            "is_live": True,
             "is_simulation": False,
+            "api_status": "LIVE",
             "account_key": target_account,
             "eccp_balance_dzd": float(solde_dec),
             "solde_str": str(res_data.get("solde", solde_dec)),
