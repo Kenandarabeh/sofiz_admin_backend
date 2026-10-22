@@ -280,6 +280,22 @@ def notify_quota_refill(
         if dec_amount <= Decimal("0.00"):
             return
 
+        # Quiet / Stop Window: Suppress alerts during active replenishment grace shield
+        try:
+            from monitoring.models import G2BulkReplenishmentWindow
+            if G2BulkReplenishmentWindow.is_replenishment_active():
+                G2BulkReplenishmentWindow.record_suppressed_alert(
+                    alert_type="QUOTA_REFILL",
+                    amount=dec_amount
+                )
+                logger.info(
+                    f"[QuotaNotificationService] Refill email alert suppressed (+{dec_amount:,.2f} DZD for {subsystem}). "
+                    f"Replenishment Grace Shield is active (Quiet Transit Window)."
+                )
+                return
+        except Exception as shield_err:
+            logger.debug(f"[QuotaNotificationService] Shield check exception: {shield_err}")
+
         operator_display = "Walid (Withdrawal Officer)"
         if operator:
             if hasattr(operator, 'get_full_name') and operator.get_full_name():

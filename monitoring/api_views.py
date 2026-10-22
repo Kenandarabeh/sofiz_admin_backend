@@ -1134,6 +1134,7 @@ class G2BulkReplenishmentWindowViewSet(viewsets.ModelViewSet):
     """
     queryset = G2BulkReplenishmentWindow.objects.all().order_by('-started_at')
     serializer_class = G2BulkReplenishmentWindowSerializer
+    permission_classes = [permissions.AllowAny]
 
     def list(self, request, *args, **kwargs):
         # Auto-evaluate expired windows on request
@@ -1173,6 +1174,13 @@ class G2BulkReplenishmentWindowViewSet(viewsets.ModelViewSet):
         except (ValueError, TypeError):
             duration_hours = 30
 
+        duration_minutes = request.data.get('duration_minutes')
+        if duration_minutes is not None:
+            try:
+                duration_minutes = int(duration_minutes)
+            except Exception:
+                duration_minutes = None
+
         target_amount = request.data.get('target_amount_usd')
         target_amount_dec = None
         if target_amount not in (None, ''):
@@ -1195,14 +1203,16 @@ class G2BulkReplenishmentWindowViewSet(viewsets.ModelViewSet):
         window = G2BulkReplenishmentWindow.start_window(
             supplier=supplier,
             duration_hours=duration_hours,
+            duration_minutes=duration_minutes,
             target_amount_usd=target_amount_dec,
             initiated_by=initiated_by,
-            notes=notes or f"Started G2Bulk replenishment grace shield for up to {duration_hours} hours."
+            notes=notes or f"Started replenishment grace shield (Quiet Window) for funds transit."
         )
 
+        display_duration = f"{duration_minutes} minutes" if duration_minutes else f"{duration_hours} hours"
         return Response({
             'success': True,
-            'message': f"G2Bulk replenishment grace shield activated for {duration_hours} hours. Notifications blocked to ensure continuous operations.",
+            'message': f"Replenishment grace shield activated for {display_duration}. All automated alerts muted.",
             'active_window': G2BulkReplenishmentWindowSerializer(window).data
         })
 

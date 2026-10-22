@@ -1024,11 +1024,16 @@ class G2BulkReplenishmentWindow(models.Model):
             active.save(update_fields=['suppressed_alerts_count', 'notes', 'updated_at'])
 
     @classmethod
-    def start_window(cls, supplier=None, duration_hours: int = 30, target_amount_usd: Decimal = None, initiated_by: str = "Admin Operator", notes: str = ""):
-        """Starts a new G2Bulk replenishment grace period (capped at 30 hours max)."""
-        duration = min(30, max(1, int(duration_hours or 30)))
+    def start_window(cls, supplier=None, duration_hours: int = 30, duration_minutes: int = None, target_amount_usd: Decimal = None, initiated_by: str = "Admin Operator", notes: str = ""):
+        """Starts a new G2Bulk replenishment grace period (supports custom minutes or hours up to 30 hours)."""
         now = timezone.now()
-        expires_at = now + timezone.timedelta(hours=duration)
+        if duration_minutes is not None and int(duration_minutes) > 0:
+            dur_mins = min(30 * 60, int(duration_minutes))
+            expires_at = now + timezone.timedelta(minutes=dur_mins)
+            duration = max(1, round(dur_mins / 60))
+        else:
+            duration = min(30, max(1, int(duration_hours or 30)))
+            expires_at = now + timezone.timedelta(hours=duration)
 
         if not supplier:
             supplier = SupplierAccount.objects.filter(provider=SupplierProvider.G2BULK).first()

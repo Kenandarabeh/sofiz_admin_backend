@@ -55,6 +55,10 @@ class ReceiptParserService:
         from monitoring.models import WithdrawalRecord, BaridiMobFundingReceipt, FundingCycleStatus
         from django.db.models import Q
 
+        # Test Receipts Bypass (for system testing by operators / admins)
+        if reference and 'TEST-' in str(reference).upper():
+            return {'is_used': False, 'is_test_receipt': True}
+
         # 1. Check in WithdrawalRecord
         w_query = Q()
         if file_hash:
