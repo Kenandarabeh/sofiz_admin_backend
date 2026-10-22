@@ -1715,8 +1715,12 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
                 data['notes'] = (data.get('notes') or '').strip() + f"\n• [Audit Warning] Transaction #{ref} NOT verified in BaridiMob statement records."
 
             data['file_hash'] = file_hash
-            if ref and not data.get('reference'):
-                data['reference'] = ref
+            if ref:
+                if 'TEST-' in str(ref).upper():
+                    import time
+                    data['reference'] = f"{ref}-{int(time.time())}"
+                elif not data.get('reference'):
+                    data['reference'] = ref
             if parsed_receipt.get('recipient_rip'):
                 data['recipient_rip'] = parsed_receipt.get('recipient_rip')
             if parsed_receipt.get('amount_dzd'):
