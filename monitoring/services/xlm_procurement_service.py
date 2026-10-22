@@ -148,7 +148,7 @@ class XLMProcurementService:
             'success': True,
             'walid_sourcing_wallet': {
                 'id': walid_wallet.id if walid_wallet else None,
-                'name': walid_wallet.name if walid_wallet else 'Walid XLM Sourcing & Withdrawal Wallet',
+                'name': 'Treasury Withdrawal Sourcing Wallet',
                 'public_address': walid_wallet.public_address if walid_wallet else '',
                 'dzt_balance': float(getattr(walid_wallet, 'dzt_balance', Decimal('0.0000')) or 0.0),
                 'native_xlm_balance': float(getattr(walid_wallet, 'native_xlm_balance', Decimal('0.0000000')) or 0.0),
@@ -170,7 +170,7 @@ class XLMProcurementService:
                 'rate': float(p2p_rate_val),
             },
             'shared_postal_account': {
-                'account_name': salah_alloc.get('account_name') or (shared_acc.account_name if shared_acc else 'Salah Gaming Capital Account (salahsofi)'),
+                'account_name': 'Gaming Operational Account',
                 'rip_number': salah_alloc.get('rip_number') or (shared_acc.rip_number if shared_acc else '00799999001738866535'),
                 'eccp_balance_dzd': float(eccp_balance),
                 'baridimob_card_balance_dzd': float(baridimob_balance),

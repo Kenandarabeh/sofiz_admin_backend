@@ -882,9 +882,9 @@ class BalanceEngine:
 
         return {
             'account_id': salah_acc.id if salah_acc else None,
-            'account_name': salah_acc.account_name if salah_acc else "Salah Shared Account",
+            'account_name': "Gaming Operational Account",
             'rip_number': salah_acc.rip_number if salah_acc else "00799999001738866535",
-            'account_email': salah_acc.account_email if salah_acc else "salahsofi",
+            'account_email': salah_acc.account_email if salah_acc else "game",
             'real_balance_dzd': float(real_balance),
             'eccp_balance_dzd': float(real_balance),
             'baridimob_card_balance_dzd': float(baridimob_card_balance),

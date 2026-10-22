@@ -62,15 +62,15 @@ class BaridiMobService:
         target_key = 'game' if account_key == 'game' else 'facture'
         if target_key == 'game':
             endpoint = f"{base_url}/financial/baridimob/game/balance/"
-            default_label = "salahsofi"
+            default_label = "game"
             default_rip = "00799999001738866535"
-            default_name = "Salah Gaming Account (salahsofi)"
+            default_name = "Gaming Operational Account"
             system_type = SubSystemType.GAMING
         else:
             endpoint = f"{base_url}/financial/baridimob/facture/balance/"
-            default_label = "Sihaam31"
+            default_label = "facture"
             default_rip = "00799999004166560419"
-            default_name = "BaridiMob Main Settlement Account (Sihaam31)"
+            default_name = "Factures Operational Account"
             system_type = SubSystemType.UTILITY
 
         now = timezone.now()
