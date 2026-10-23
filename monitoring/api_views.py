@@ -1726,15 +1726,13 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
                     data['reference'] = ref
             if parsed_receipt.get('recipient_rip'):
                 data['recipient_rip'] = parsed_receipt.get('recipient_rip')
-            if parsed_receipt.get('amount_dzd'):
+            if parsed_receipt.get('amount_dzd') and Decimal(str(parsed_receipt.get('amount_dzd'))) > 0:
                 data['receipt_amount_dzd'] = parsed_receipt.get('amount_dzd')
                 data['amount_dzd'] = parsed_receipt.get('amount_dzd')
-            elif data.get('amount_dzd'):
-                data['receipt_amount_dzd'] = Decimal(str(data.get('amount_dzd')))
             else:
                 return Response({
                     'success': False,
-                    'error': 'Could not extract a verified transaction amount from the uploaded BaridiMob receipt PDF. Please verify and confirm the amount.'
+                    'error': 'Automatic receipt OCR recognition is mandatory. Could not extract transaction amount from receipt. Manual amount entry is strictly prohibited.'
                 }, status=status.HTTP_400_BAD_REQUEST)
 
             if not data.get('destination_recipient'):
