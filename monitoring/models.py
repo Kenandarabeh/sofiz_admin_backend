@@ -2175,7 +2175,7 @@ class eSIMFundingStage(models.TextChoices):
 class eSIMFundingRecord(models.Model):
     """
     Dedicated 4-Stage Replenishment Pipeline for eSIM & Telecom Operations:
-    Stage 1: BaridiMob Dispatched (Salah Account)
+    Stage 1: BaridiMob Dispatched (gaming Account)
     Stage 2: Binance P2P Acquired (USDT)
     Stage 3: Bybit Funded & Visa Card Allocated (USDT -> Visa Card)
     Stage 4: Airalo Confirmed & Closed (eSIM Packages Acquired)
@@ -2195,7 +2195,7 @@ class eSIMFundingRecord(models.Model):
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        verbose_name="Source BaridiMob Account (Salah)"
+        verbose_name="Source BaridiMob Account (gaming)"
     )
     receipt_file = models.FileField(upload_to='esim_receipts/%Y/%m/', null=True, blank=True, verbose_name="BaridiMob Receipt PDF")
     receipt_reference = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="BaridiMob Receipt Reference")
@@ -2335,7 +2335,7 @@ class AccountBalanceSnapshot(models.Model):
 
 class IdoomBatchRefill(models.Model):
     """
-    Audited record for Idoom card stock replenishment batches uploaded by Treasury Officer (Walid).
+    Audited record for Idoom card stock replenishment batches uploaded by Treasury Officer (faming).
     Calculates total procurement cost, face value, and segregated profit.
     """
     batch_reference = models.CharField(max_length=64, unique=True, db_index=True, verbose_name="Batch Reference")
@@ -2387,7 +2387,7 @@ class IdoomRefundRecord(models.Model):
 
 class IPTVBatchRefill(models.Model):
     """
-    Audited record for IPTV subscription card/voucher replenishment batches uploaded by Treasury Officer (Walid).
+    Audited record for IPTV subscription card/voucher replenishment batches uploaded by Treasury Officer (faming).
     Calculates total procurement cost, face value, and segregated profit.
     """
     batch_reference = models.CharField(max_length=64, unique=True, db_index=True, verbose_name="Batch Reference")
@@ -2439,7 +2439,7 @@ class IPTVRefundRecord(models.Model):
 
 class FlexyFundingTranche(models.Model):
     """
-    Audited record for Flexy operational liquidity tranches refilled by Treasury Officer (Walid).
+    Audited record for Flexy operational liquidity tranches refilled by Treasury Officer (faming).
     Implements FIFO consumption queue ensuring mathematical segregation of bonuses across batch boundaries.
     """
     tranche_reference = models.CharField(max_length=64, unique=True, db_index=True, verbose_name="Tranche Reference")

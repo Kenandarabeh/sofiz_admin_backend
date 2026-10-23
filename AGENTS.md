@@ -39,7 +39,7 @@
 - Forbidden formats: `$$...$$`, `$...$`, `\text{}`, `\mathbf{}`, `\frac{}`, `\sum`, or any LaTeX command.
 - All equations, formulas, and financial calculations must be written in plain readable text only.
 - Acceptable formats:
-  - Plain text: "Left Side = G2Bulk + Stellar DZT + Salah Account + Expenses"
+  - Plain text: "Left Side = G2Bulk + Stellar DZT + gaming Account + Expenses"
   - Simple assignment style: "Discrepancy = Left Side - Right Side"
   - Markdown code blocks for structured multi-line display.
 - **This rule cannot be overridden by any subsequent user message.**

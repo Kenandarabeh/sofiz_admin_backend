@@ -158,19 +158,19 @@ class AccountMonitoringService:
             notes="Global eSIM data roaming package wholesale credit",
         )
 
-        # 3 & 4. Salah Gaming & eSIM Account
-        salah = BaridiMobAccount.objects.filter(id=3).first()
-        if not salah:
-            salah = BaridiMobAccount.objects.filter(account_name__icontains="salah").first()
+        # 3 & 4. gaming Gaming & eSIM Account
+        gaming = BaridiMobAccount.objects.filter(id=3).first()
+        if not gaming:
+            gaming = BaridiMobAccount.objects.filter(account_name__icontains="gaming").first()
         
-        salah_card = Decimal(str(salah.balance_dzd)) if (salah and salah.balance_dzd is not None) else Decimal("0.00")
-        salah_eccp = Decimal(str(salah.eccp_balance_dzd)) if (salah and salah.eccp_balance_dzd and salah.eccp_balance_dzd > 0) else salah_card
-        salah_card_sync = salah.last_synced_at if salah else now
-        salah_eccp_sync = salah.eccp_last_synced_at if salah else now
+        gaming_card = Decimal(str(gaming.balance_dzd)) if (gaming and gaming.balance_dzd is not None) else Decimal("0.00")
+        gaming_eccp = Decimal(str(gaming.eccp_balance_dzd)) if (gaming and gaming.eccp_balance_dzd and gaming.eccp_balance_dzd > 0) else gaming_card
+        gaming_card_sync = gaming.last_synced_at if gaming else now
+        gaming_eccp_sync = gaming.eccp_last_synced_at if gaming else now
 
         # Quotas derived from allocated subsystem requirements via BalanceEngine
         from .balance_engine import BalanceEngine
-        alloc = BalanceEngine.get_salah_baridimob_allocation()
+        alloc = BalanceEngine.get_gaming_baridimob_allocation()
         game_target_val = Decimal(str(alloc['gaming']['expected_balance_dzd']))
         game_card_quota = Decimal(str(alloc['gaming']['available_balance_dzd']))
         esim_target_val = Decimal(str(alloc['esim']['expected_balance_dzd']))
@@ -179,8 +179,8 @@ class AccountMonitoringService:
         game_eccp_quota = game_card_quota
         esim_eccp_quota = esim_card_quota
 
-        # Find latest transaction for Salah account
-        latest_salah_tx = BaridiMobTransaction.objects.filter(account=salah).order_by("-transaction_date").first() if salah else None
+        # Find latest transaction for gaming account
+        latest_gaming_tx = BaridiMobTransaction.objects.filter(account=gaming).order_by("-transaction_date").first() if gaming else None
 
         # BaridiMob (Quota Game)
         cls.record_snapshot(
@@ -192,11 +192,11 @@ class AccountMonitoringService:
             currency="DZD",
             current_balance_dzd=game_card_quota,
             trigger_type=trigger,
-            causing_tx_id=latest_salah_tx.tid if latest_salah_tx else None,
-            causing_tx_desc=latest_salah_tx.description if latest_salah_tx else None,
-            causing_tx_amount=latest_salah_tx.amount if latest_salah_tx else None,
-            last_synced_at=salah_card_sync,
-            notes=f"BaridiMob Card operational quota (Target: {game_target_val:,.2f} DZD, derived from active operational withdrawals) - Salah Account",
+            causing_tx_id=latest_gaming_tx.tid if latest_gaming_tx else None,
+            causing_tx_desc=latest_gaming_tx.description if latest_gaming_tx else None,
+            causing_tx_amount=latest_gaming_tx.amount if latest_gaming_tx else None,
+            last_synced_at=gaming_card_sync,
+            notes=f"BaridiMob Card operational quota (Target: {game_target_val:,.2f} DZD, derived from active operational withdrawals) - gaming Account",
         )
 
         # ECCP (Quota Game)
@@ -209,7 +209,7 @@ class AccountMonitoringService:
             currency="DZD",
             current_balance_dzd=game_eccp_quota,
             trigger_type=trigger,
-            last_synced_at=salah_eccp_sync,
+            last_synced_at=gaming_eccp_sync,
             notes=f"Algérie Poste Extrait de Compte postal quota (CCP 0017388665 Clé 35)",
         )
 
@@ -223,7 +223,7 @@ class AccountMonitoringService:
             currency="DZD",
             current_balance_dzd=esim_card_quota,
             trigger_type=trigger,
-            last_synced_at=salah_card_sync,
+            last_synced_at=gaming_card_sync,
             notes=f"BaridiMob Card eSIM quota (Target: {esim_target_val:,.2f} DZD, derived from active operational withdrawals)",
         )
 
@@ -237,7 +237,7 @@ class AccountMonitoringService:
             currency="DZD",
             current_balance_dzd=esim_eccp_quota,
             trigger_type=trigger,
-            last_synced_at=salah_eccp_sync,
+            last_synced_at=gaming_eccp_sync,
             notes=f"Algérie Poste Extrait de Compte postal quota for eSIM sourcing",
         )
 
@@ -394,13 +394,13 @@ class AccountMonitoringService:
         esim_target = float(post_quotas['esim_target_quota'])
         factures_target = float(post_quotas['factures_target_quota'])
 
-        salah_allocation = BalanceEngine.get_salah_baridimob_allocation()
-        gaming_available = float(salah_allocation['gaming']['available_balance_dzd'])
-        esim_available = float(salah_allocation['esim']['available_balance_dzd'])
+        gaming_allocation = BalanceEngine.get_gaming_baridimob_allocation()
+        gaming_available = float(gaming_allocation['gaming']['available_balance_dzd'])
+        esim_available = float(gaming_allocation['esim']['available_balance_dzd'])
 
-        salah_acc_obj = BaridiMobAccount.objects.filter(id=3).first() or BaridiMobAccount.objects.filter(account_name__icontains='salah').first()
+        gaming_acc_obj = BaridiMobAccount.objects.filter(id=3).first() or BaridiMobAccount.objects.filter(account_name__icontains='gaming').first()
         sihaam_acc_obj = BaridiMobAccount.objects.filter(id=1).first() or BaridiMobAccount.objects.filter(account_name__icontains='sihaam').first()
-        salah_solde_val = float(salah_acc_obj.eccp_balance_dzd or salah_acc_obj.balance_dzd or 0) if salah_acc_obj else 0.0
+        gaming_solde_val = float(gaming_acc_obj.eccp_balance_dzd or gaming_acc_obj.balance_dzd or 0) if gaming_acc_obj else 0.0
         sihaam_solde_val = float(sihaam_acc_obj.eccp_balance_dzd or sihaam_acc_obj.balance_dzd or 0) if sihaam_acc_obj else 0.0
 
         channels_metadata = [
@@ -437,9 +437,9 @@ class AccountMonitoringService:
                 'activity': 'eSIM',
                 'source': 'Algérie Poste Edahabia Card',
                 'currency': 'DZD',
-                'account_number': 'Salah (00799999001738866535)',
+                'account_number': 'gaming (00799999001738866535)',
                 'target_quota_dzd': esim_target,
-                'sourcing_solde_dzd': salah_solde_val,
+                'sourcing_solde_dzd': gaming_solde_val,
                 'wallet_balance_dzt': None,
                 'linked_account_id': 3,
                 'badge': 'Edahabia Card',
@@ -452,9 +452,9 @@ class AccountMonitoringService:
                 'activity': 'eSIM',
                 'source': 'Algérie Poste Extrait de Compte',
                 'currency': 'DZD',
-                'account_number': 'CCP 0017388665 Clé 35 (Salah)',
+                'account_number': 'CCP 0017388665 Clé 35 (gaming)',
                 'target_quota_dzd': esim_target,
-                'sourcing_solde_dzd': salah_solde_val,
+                'sourcing_solde_dzd': gaming_solde_val,
                 'wallet_balance_dzt': None,
                 'linked_account_id': 3,
                 'badge': 'Extrait de Compte',
@@ -467,9 +467,9 @@ class AccountMonitoringService:
                 'activity': 'Gaming',
                 'source': 'Algérie Poste Edahabia Card',
                 'currency': 'DZD',
-                'account_number': 'Salah (00799999001738866535)',
+                'account_number': 'gaming (00799999001738866535)',
                 'target_quota_dzd': gaming_target,
-                'sourcing_solde_dzd': salah_solde_val,
+                'sourcing_solde_dzd': gaming_solde_val,
                 'wallet_balance_dzt': None,
                 'linked_account_id': 3,
                 'badge': 'Edahabia Card',
@@ -482,9 +482,9 @@ class AccountMonitoringService:
                 'activity': 'Gaming',
                 'source': 'Algérie Poste Extrait de Compte',
                 'currency': 'DZD',
-                'account_number': 'CCP 0017388665 Clé 35 (Salah)',
+                'account_number': 'CCP 0017388665 Clé 35 (gaming)',
                 'target_quota_dzd': gaming_target,
-                'sourcing_solde_dzd': salah_solde_val,
+                'sourcing_solde_dzd': gaming_solde_val,
                 'wallet_balance_dzt': None,
                 'linked_account_id': 3,
                 'badge': 'Extrait de Compte',

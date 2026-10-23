@@ -1335,12 +1335,12 @@ class BaridiMobTransactionViewSet(viewsets.ReadOnlyModelViewSet):
 
 # ==============================================================================
 # 7. FINANCIAL LEDGERS (EXPENSES, PROFITS, BILLS, CAPITAL, WITHDRAWALS)
-class IsAdminOrWalidTreasury(permissions.BasePermission):
+class IsAdminOrfamingTreasury(permissions.BasePermission):
     """
     Institutional Role-Based Access Control:
     Restricts access strictly to:
     1. System Administrators (is_superuser, is_staff, or Admin groups).
-    2. Walid / Treasury Officers (username containing 'walid',
+    2. faming / Treasury Officers (username containing 'faming',
        or mission_role in [TREASURY_OFFICER, WITHDRAWAL_OPERATOR, ALL_FAMILIES],
        or groups ['Withdrawal Operations Officer', 'Treasury & P2P Officer']).
     """
@@ -1355,7 +1355,7 @@ class IsAdminOrWalidTreasury(permissions.BasePermission):
             return True
 
         username = (user.username or '').lower()
-        if 'walid' in username:
+        if 'faming' in username:
             return True
 
         profile = getattr(user, 'operator_profile', None)
@@ -1395,7 +1395,7 @@ class IsSuperAdminForExpenseDelete(permissions.BasePermission):
 class ExpenseRecordViewSet(viewsets.ModelViewSet):
     queryset = ExpenseRecord.objects.all().order_by('-expense_date', '-created_at')
     serializer_class = ExpenseRecordSerializer
-    permission_classes = [IsAdminOrWalidTreasury, IsSuperAdminForExpenseDelete]
+    permission_classes = [IsAdminOrfamingTreasury, IsSuperAdminForExpenseDelete]
 
     def destroy(self, request, *args, **kwargs):
         user = request.user
@@ -1804,7 +1804,7 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
                 'error': 'Amount and transaction reference are required to initiate an outflow.'
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # Combined multi-record consolidation support (e.g. Soufiane combining multiple Walid quotas)
+        # Combined multi-record consolidation support (e.g. track combining multiple faming quotas)
         raw_source_ids = data.pop('source_record_ids', None) if hasattr(data, 'pop') else data.get('source_record_ids')
         if not raw_source_ids and request.data.get('source_record_ids'):
             raw_source_ids = request.data.get('source_record_ids')
@@ -1988,13 +1988,13 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
 
                 instance.save()
 
-        # Real-time Quota Refill Notification to Soufiane (Gaming Manager) & Admin
+        # Real-time Quota Refill Notification to track (Gaming Manager) & Admin
         try:
             from .services.quota_notification_service import notify_quota_refill
             notify_quota_refill(
                 subsystem=instance.system_type,
                 amount_dzd=instance.amount_dzd,
-                operator=request.user if (request.user and request.user.is_authenticated) else "Walid (Withdrawal Officer)",
+                operator=request.user if (request.user and request.user.is_authenticated) else "faming (Withdrawal Officer)",
                 reference=instance.reference or instance.id,
                 notes=instance.notes,
                 async_send=True,
@@ -2657,7 +2657,7 @@ class GamingMonitoringAPIView(APIView):
 
     def get(self, request):
         auto_sync = request.query_params.get('sync', 'false').lower() == 'true'
-        salah_account = BaridiMobAccount.objects.filter(
+        gaming_account = BaridiMobAccount.objects.filter(
             system_type=SubSystemType.GAMING,
             is_active=True
         ).first()
@@ -2666,9 +2666,9 @@ class GamingMonitoringAPIView(APIView):
             try:
                 from .services.baridimob_service import BaridiMobService
                 BaridiMobService.sync_baridi_balance(account_key='game')
-                salah_account = BaridiMobAccount.objects.filter(system_type=SubSystemType.GAMING, is_active=True).first()
+                gaming_account = BaridiMobAccount.objects.filter(system_type=SubSystemType.GAMING, is_active=True).first()
             except Exception as e:
-                logger.warning(f"Error during Salah Gaming Account auto-sync: {e}")
+                logger.warning(f"Error during gaming Gaming Account auto-sync: {e}")
 
         settings = MonitoringGlobalSettings.get_settings()
 
@@ -2693,7 +2693,7 @@ class GamingMonitoringAPIView(APIView):
         suppliers = SupplierAccount.objects.filter(is_active=True)
         gaming_capital = float(settings.effective_gaming_capital)
         gaming_expenses = float(GamingExpenseRecord.objects.aggregate(total=Sum('amount_dzd'))['total'] or 0)
-        salah_balance = float(salah_account.balance_dzd) if salah_account else 0.0
+        gaming_balance = float(gaming_account.balance_dzd) if gaming_account else 0.0
         total_gaming_dzt = float(gaming_wallets.aggregate(total=Sum('dzt_balance'))['total'] or 0)
 
         # Resolve authentic Binance P2P acquisition price for Gaming
@@ -2734,11 +2734,11 @@ class GamingMonitoringAPIView(APIView):
         profit_wallet = StellarWallet.objects.filter(family=WalletFamily.GAME, role=WalletRole.PROFIT, is_active=True).first()
         withdrawal_wallet = StellarWallet.objects.filter(family=WalletFamily.GAME, role=WalletRole.WITHDRAWAL, is_active=True).first()
 
-        # BaridiMob Salah allocation between Gaming and eSIM
+        # BaridiMob gaming allocation between Gaming and eSIM
         from .services.balance_engine import BalanceEngine
-        salah_allocation = BalanceEngine.get_salah_baridimob_allocation()
-        expected_gaming_baridi = float(salah_allocation['gaming']['expected_balance_dzd'])
-        available_gaming_baridi = float(salah_allocation['gaming']['available_balance_dzd'])
+        gaming_allocation = BalanceEngine.get_gaming_baridimob_allocation()
+        expected_gaming_baridi = float(gaming_allocation['gaming']['expected_balance_dzd'])
+        available_gaming_baridi = float(gaming_allocation['gaming']['available_balance_dzd'])
 
         eccp_gaming_quota = available_gaming_baridi
         left_side = round(total_g2bulk_dzd + total_binance_dzd + total_in_transit_dzd + total_gaming_dzt + eccp_gaming_quota + gaming_expenses, 2)
@@ -2749,7 +2749,7 @@ class GamingMonitoringAPIView(APIView):
         return Response({
             'success': True,
             'gaming_baridimob_min_threshold_dzd': float(settings.gaming_baridimob_min_threshold_dzd or 10000.0),
-            'salah_baridimob_allocation': salah_allocation,
+            'gaming_baridimob_allocation': gaming_allocation,
             'quota': {
                 'current_available_dzd': available_gaming_baridi,
                 'expected_balance_dzd': expected_gaming_baridi,
@@ -2767,7 +2767,7 @@ class GamingMonitoringAPIView(APIView):
                 'total_binance_dzd': total_binance_dzd,
                 'total_in_transit_dzd': total_in_transit_dzd,
                 'total_gaming_dzt': total_gaming_dzt,
-                'salah_gaming_account_dzd': salah_balance,
+                'gaming_gaming_account_dzd': gaming_balance,
                 'eccp_gaming_quota': eccp_gaming_quota,
                 'expected_gaming_in_baridimob': expected_gaming_baridi,
                 'available_gaming_in_baridimob': available_gaming_baridi,
@@ -2789,42 +2789,42 @@ class GamingMonitoringAPIView(APIView):
                 }
                 for ba in binance_accounts
             ],
-            'salah_gaming_account': {
-                'id': salah_account.id,
-                'account_name': salah_account.account_name,
+            'gaming_gaming_account': {
+                'id': gaming_account.id,
+                'account_name': gaming_account.account_name,
                 'account_key': 'game',
-                'owner': 'Salah',
+                'owner': 'gaming',
                 'ccp_number': '0017388665',
-                'rip_number': salah_account.rip_number,
-                'account_email': salah_account.account_email or 'salahsofi',
-                'baridimob_username': salah_account.account_email or 'salahsofi',
-                'balance_dzd': float(salah_account.balance_dzd),
-                'eccp_balance_dzd': float(salah_account.eccp_balance_dzd or 0),
-                'eccp_last_synced_at': salah_account.eccp_last_synced_at.strftime('%Y-%m-%d %H:%M') if salah_account.eccp_last_synced_at else None,
+                'rip_number': gaming_account.rip_number,
+                'account_email': gaming_account.account_email or 'gamingsofi',
+                'baridimob_username': gaming_account.account_email or 'gamingsofi',
+                'balance_dzd': float(gaming_account.balance_dzd),
+                'eccp_balance_dzd': float(gaming_account.eccp_balance_dzd or 0),
+                'eccp_last_synced_at': gaming_account.eccp_last_synced_at.strftime('%Y-%m-%d %H:%M') if gaming_account.eccp_last_synced_at else None,
                 'cle_number': '35',
                 'expected_gaming_dzd': expected_gaming_baridi,
                 'available_gaming_dzd': available_gaming_baridi,
-                'expected_esim_dzd': float(salah_allocation['esim']['expected_balance_dzd']),
-                'expected_total_dzd': float(salah_allocation['expected_total_dzd']),
-                'min_threshold_dzd': float(salah_account.min_balance_threshold_dzd or 10000.0),
-                'min_recommended_dzd': float(salah_account.min_balance_threshold_dzd or 10000.0),
-                'is_below_threshold': bool(salah_account.balance_dzd < (salah_account.min_balance_threshold_dzd or Decimal("10000.00"))),
-                'needs_refill': bool(salah_account.balance_dzd < (salah_account.min_balance_threshold_dzd or Decimal("10000.00"))),
-                'is_active': salah_account.is_active,
-                'last_synced_at': salah_account.last_synced_at.strftime('%Y-%m-%d %H:%M') if salah_account.last_synced_at else None,
-                'liquidity_status': 'HEALTHY' if salah_account.balance_dzd >= (salah_account.min_balance_threshold_dzd or Decimal("10000.00")) else ('LOW' if salah_account.balance_dzd > 0 else 'CRITICAL_ZERO'),
+                'expected_esim_dzd': float(gaming_allocation['esim']['expected_balance_dzd']),
+                'expected_total_dzd': float(gaming_allocation['expected_total_dzd']),
+                'min_threshold_dzd': float(gaming_account.min_balance_threshold_dzd or 10000.0),
+                'min_recommended_dzd': float(gaming_account.min_balance_threshold_dzd or 10000.0),
+                'is_below_threshold': bool(gaming_account.balance_dzd < (gaming_account.min_balance_threshold_dzd or Decimal("10000.00"))),
+                'needs_refill': bool(gaming_account.balance_dzd < (gaming_account.min_balance_threshold_dzd or Decimal("10000.00"))),
+                'is_active': gaming_account.is_active,
+                'last_synced_at': gaming_account.last_synced_at.strftime('%Y-%m-%d %H:%M') if gaming_account.last_synced_at else None,
+                'liquidity_status': 'HEALTHY' if gaming_account.balance_dzd >= (gaming_account.min_balance_threshold_dzd or Decimal("10000.00")) else ('LOW' if gaming_account.balance_dzd > 0 else 'CRITICAL_ZERO'),
                 'min_recommended_dzd': 10000.0,
                 'working_capital_role': 'Primary Gaming Operations & Wholesale Counterparty Account (Shared with eSIM)',
                 'audit_notice': 'Monitored Working Capital: This account receives aggregated wholesale withdrawal disbursements to maintain operational gaming balance.'
-            } if salah_account else None,
-            'salah_eccp_account': {
-                'account_name': 'Salah Postal CCP Account',
+            } if gaming_account else None,
+            'gaming_eccp_account': {
+                'account_name': 'gaming Postal CCP Account',
                 'ccp_number': '0017388665',
                 'cle_number': '35',
-                'rip_number': salah_account.rip_number if salah_account else '00799999001738866535',
-                'eccp_balance_dzd': float(salah_account.eccp_balance_dzd or 0) if salah_account else 0.0,
-                'eccp_last_synced_at': salah_account.eccp_last_synced_at.strftime('%Y-%m-%d %H:%M') if (salah_account and salah_account.eccp_last_synced_at) else None,
-                'is_active': salah_account.is_active if salah_account else True,
+                'rip_number': gaming_account.rip_number if gaming_account else '00799999001738866535',
+                'eccp_balance_dzd': float(gaming_account.eccp_balance_dzd or 0) if gaming_account else 0.0,
+                'eccp_last_synced_at': gaming_account.eccp_last_synced_at.strftime('%Y-%m-%d %H:%M') if (gaming_account and gaming_account.eccp_last_synced_at) else None,
+                'is_active': gaming_account.is_active if gaming_account else True,
             },
             'profit_wallet': {
                 'id': profit_wallet.id,
@@ -2885,9 +2885,9 @@ class GamingMonitoringAPIView(APIView):
         return self.get(request)
 
 
-class SalahGamingAccountAPIView(APIView):
+class gamingGamingAccountAPIView(APIView):
     """
-    Dedicated Monitoring API for Salah Gaming Working Capital Account.
+    Dedicated Monitoring API for gaming Gaming Working Capital Account.
     Monitors live BaridiMob / ECCP liquidity for Gaming family operations.
     """
     permission_classes = [permissions.AllowAny]
@@ -2904,9 +2904,9 @@ class SalahGamingAccountAPIView(APIView):
 
         if not acc:
             acc = BaridiMobAccount.objects.create(
-                account_name="Salah Gaming Account (salahsofi)",
+                account_name="gaming Gaming Account (gamingsofi)",
                 rip_number="00799999001738866535",
-                account_email="salahsofi",
+                account_email="gamingsofi",
                 system_type=SubSystemType.GAMING,
                 balance_dzd=Decimal("0.00"),
                 eccp_balance_dzd=Decimal("0.00"),
@@ -2922,9 +2922,9 @@ class SalahGamingAccountAPIView(APIView):
                 BaridiMobService.sync_live_transactions_to_db(account_key='game', limit=25)
                 acc.refresh_from_db()
             except Exception as e:
-                logger.warning(f"Error during Salah Gaming auto-sync: {e}")
+                logger.warning(f"Error during gaming Gaming auto-sync: {e}")
 
-        # Archived transactions ledger for Salah
+        # Archived transactions ledger for gaming
         txs = acc.transactions.all().order_by('-transaction_date', '-created_at')
         inflow_agg = txs.filter(amount__gt=0).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
         outflow_agg = txs.filter(amount__lt=0).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
@@ -2940,7 +2940,7 @@ class SalahGamingAccountAPIView(APIView):
                 'id': 'CRITICAL_ZERO_BALANCE',
                 'severity': 'danger',
                 'title': 'Critical Zero Liquidity',
-                'message': 'Salah Gaming account has 0.00 DZD balance. Immediate replenishment required for gaming operations.',
+                'message': 'gaming Gaming account has 0.00 DZD balance. Immediate replenishment required for gaming operations.',
             })
         elif effective_card < 10000.00:
             issues.append({
@@ -2959,7 +2959,7 @@ class SalahGamingAccountAPIView(APIView):
             })
 
         pending_disbursements = WithdrawalRecord.objects.filter(
-            models.Q(recipient_rip=acc.rip_number) | models.Q(destination_recipient__icontains='Salah'),
+            models.Q(recipient_rip=acc.rip_number) | models.Q(destination_recipient__icontains='gaming'),
             stage__in=[WithdrawalStage.ALLOCATED, WithdrawalStage.BINANCE_P2P]
         ).count()
         if pending_disbursements > 0:
@@ -2982,11 +2982,11 @@ class SalahGamingAccountAPIView(APIView):
                 'id': acc.id,
                 'account_name': acc.account_name,
                 'account_key': 'game',
-                'owner': 'Salah',
+                'owner': 'gaming',
                 'ccp_number': '0017388665',
                 'rip_number': acc.rip_number,
-                'account_email': acc.account_email or 'salahsofi',
-                'baridimob_username': acc.account_email or 'salahsofi',
+                'account_email': acc.account_email or 'gamingsofi',
+                'baridimob_username': acc.account_email or 'gamingsofi',
                 'balance_dzd': effective_card,
                 'eccp_balance_dzd': effective_eccp,
                 'eccp_last_synced_at': acc.eccp_last_synced_at.strftime('%Y-%m-%d %H:%M:%S') if acc.eccp_last_synced_at else None,
@@ -3035,9 +3035,9 @@ class SalahGamingAccountAPIView(APIView):
         })
 
 
-class SalahGamingAccountSyncAPIView(APIView):
+class gamingGamingAccountSyncAPIView(APIView):
     """
-    Synchronizes Salah Gaming Account live balance and archived transactions with Epay BaridiMob API.
+    Synchronizes gaming Gaming Account live balance and archived transactions with Epay BaridiMob API.
     """
     permission_classes = [permissions.AllowAny]
 
@@ -3074,7 +3074,7 @@ class SalahGamingAccountSyncAPIView(APIView):
                     'last_synced_at': timezone.now().strftime('%Y-%m-%d %H:%M:%S'),
                 }
         except Exception as e:
-            logger.warning(f"Error syncing G2Bulk in SalahGamingAccountSyncAPIView: {e}")
+            logger.warning(f"Error syncing G2Bulk in gamingGamingAccountSyncAPIView: {e}")
 
         overall_success = bool(baridi_res.get('success')) or bool(eccp_res.get('success')) or bool(g2bulk_info)
         error_msg = None
@@ -3090,7 +3090,7 @@ class SalahGamingAccountSyncAPIView(APIView):
             'g2bulk': g2bulk_info,
             'account': {
                 'id': acc.id if acc else None,
-                'account_name': acc.account_name if acc else "Salah Gaming Account",
+                'account_name': acc.account_name if acc else "gaming Gaming Account",
                 'balance_dzd': float(acc.balance_dzd if acc else 0.0),
                 'eccp_balance_dzd': float(acc.eccp_balance_dzd if acc else 0.0),
                 'last_synced_at': acc.last_synced_at.strftime('%Y-%m-%d %H:%M:%S') if (acc and acc.last_synced_at) else None,
@@ -3400,7 +3400,7 @@ class ECCPBalanceSyncAPIView(APIView):
     """
     Synchronizes or queries ECCP postal balances using Extrait de Compte.
     Query/Body params:
-        - account: 'game' (Salah CCP: 0017388665) or 'facture' (Sihaam CCP: 0041665604)
+        - account: 'game' (gaming CCP: 0017388665) or 'facture' (Sihaam CCP: 0041665604)
         - force: boolean (if true, forces fresh scrape via extrait-de-compte)
     Extracts only the current postal balance (current_solde) without downloading statement files.
     """
@@ -3482,9 +3482,9 @@ class eSIMMonitoringAPIView(APIView):
         audit_res = BalanceEngine.run_esim_audit(sync_live=False)
         settings = MonitoringGlobalSettings.get_settings()
 
-        # Shared Sourcing Accounts (Salah BaridiMob & Corporate Binance)
-        salah_account = BaridiMobAccount.objects.filter(
-            models.Q(account_name__icontains='salah') | models.Q(rip_number__icontains='00799999001738866535'),
+        # Shared Sourcing Accounts (gaming BaridiMob & Corporate Binance)
+        gaming_account = BaridiMobAccount.objects.filter(
+            models.Q(account_name__icontains='gaming') | models.Q(rip_number__icontains='00799999001738866535'),
             is_active=True
         ).first()
 
@@ -3501,7 +3501,7 @@ class eSIMMonitoringAPIView(APIView):
         collection_wallet = esim_wallets_qs.filter(role=WalletRole.COLLECTION, is_active=True).first()
         profit_wallet = esim_wallets_qs.filter(role=WalletRole.PROFIT, is_active=True).first()
 
-        salah_allocation = audit_res.get('salah_allocation') or BalanceEngine.get_salah_baridimob_allocation()
+        gaming_allocation = audit_res.get('gaming_allocation') or BalanceEngine.get_gaming_baridimob_allocation()
 
         # Recent Fundings (4-stage pipeline)
         recent_fundings = eSIMFundingRecord.objects.all().order_by('-created_at')[:20]
@@ -3513,11 +3513,11 @@ class eSIMMonitoringAPIView(APIView):
             'success': True,
             'timestamp': timezone.now().isoformat(),
             'airalo_min_threshold_usd': float(settings.airalo_min_threshold_usd or 100.0),
-            'salah_baridimob_allocation': salah_allocation,
+            'gaming_baridimob_allocation': gaming_allocation,
             'quota': {
-                'current_available_dzd': float(salah_allocation['esim']['available_balance_dzd']),
-                'expected_balance_dzd': float(salah_allocation['esim']['expected_balance_dzd']),
-                'expected_allocation_dzd': float(salah_allocation['esim']['expected_balance_dzd']),
+                'current_available_dzd': float(gaming_allocation['esim']['available_balance_dzd']),
+                'expected_balance_dzd': float(gaming_allocation['esim']['expected_balance_dzd']),
+                'expected_allocation_dzd': float(gaming_allocation['esim']['expected_balance_dzd']),
                 'min_threshold_dzd': float(settings.gaming_baridimob_min_threshold_dzd or 10000.0),
             },
             'equation': {
@@ -3538,20 +3538,20 @@ class eSIMMonitoringAPIView(APIView):
             'bybit_account': BybitAccountSerializer(bybit_acc).data if bybit_acc else None,
             'airalo_account': AiraloAccountSerializer(airalo_acc).data if airalo_acc else None,
             'shared_sourcing': {
-                'salah_baridimob': {
-                    'id': salah_account.id if salah_account else None,
-                    'account_name': salah_account.account_name if salah_account else "Salah BaridiMob",
-                    'balance_dzd': float(salah_account.balance_dzd) if salah_account else 0.0,
-                    'expected_esim_dzd': float(salah_allocation['esim']['expected_balance_dzd']),
-                    'available_esim_dzd': float(salah_allocation['esim']['available_balance_dzd']),
-                    'expected_gaming_dzd': float(salah_allocation['gaming']['expected_balance_dzd']),
-                    'available_gaming_dzd': float(salah_allocation['gaming']['available_balance_dzd']),
-                    'expected_total_dzd': float(salah_allocation['expected_total_dzd']),
-                    'rip_number': salah_account.rip_number if salah_account else "00799999001738866535",
-                    'last_synced_at': salah_account.last_synced_at.isoformat() if salah_account and salah_account.last_synced_at else None,
-                    'eccp_balance_dzd': float(salah_account.eccp_balance_dzd or 0.0) if salah_account else 0.0,
-                    'eccp_last_synced_at': salah_account.eccp_last_synced_at.isoformat() if salah_account and salah_account.eccp_last_synced_at else None,
-                } if salah_account else None,
+                'gaming_baridimob': {
+                    'id': gaming_account.id if gaming_account else None,
+                    'account_name': gaming_account.account_name if gaming_account else "gaming BaridiMob",
+                    'balance_dzd': float(gaming_account.balance_dzd) if gaming_account else 0.0,
+                    'expected_esim_dzd': float(gaming_allocation['esim']['expected_balance_dzd']),
+                    'available_esim_dzd': float(gaming_allocation['esim']['available_balance_dzd']),
+                    'expected_gaming_dzd': float(gaming_allocation['gaming']['expected_balance_dzd']),
+                    'available_gaming_dzd': float(gaming_allocation['gaming']['available_balance_dzd']),
+                    'expected_total_dzd': float(gaming_allocation['expected_total_dzd']),
+                    'rip_number': gaming_account.rip_number if gaming_account else "00799999001738866535",
+                    'last_synced_at': gaming_account.last_synced_at.isoformat() if gaming_account and gaming_account.last_synced_at else None,
+                    'eccp_balance_dzd': float(gaming_account.eccp_balance_dzd or 0.0) if gaming_account else 0.0,
+                    'eccp_last_synced_at': gaming_account.eccp_last_synced_at.isoformat() if gaming_account and gaming_account.eccp_last_synced_at else None,
+                } if gaming_account else None,
                 'corporate_binance': {
                     'id': binance_acc.id if binance_acc else None,
                     'account_name': binance_acc.account_name if binance_acc else "Official Binance Account",
@@ -3559,14 +3559,14 @@ class eSIMMonitoringAPIView(APIView):
                     'balance_dzd_equivalent': float(binance_acc.balance_dzd_equivalent) if binance_acc else 0.0,
                 } if binance_acc else None,
             },
-            'salah_eccp_account': {
-                'id': salah_account.id if salah_account else None,
-                'account_name': salah_account.account_name if salah_account else 'Salah CCP Account',
+            'gaming_eccp_account': {
+                'id': gaming_account.id if gaming_account else None,
+                'account_name': gaming_account.account_name if gaming_account else 'gaming CCP Account',
                 'ccp_number': '0017388665',
                 'cle': '35',
-                'eccp_balance_dzd': float(salah_account.eccp_balance_dzd or 0.0) if salah_account else 0.0,
-                'eccp_last_synced_at': salah_account.eccp_last_synced_at.isoformat() if salah_account and salah_account.eccp_last_synced_at else None,
-            } if salah_account else None,
+                'eccp_balance_dzd': float(gaming_account.eccp_balance_dzd or 0.0) if gaming_account else 0.0,
+                'eccp_last_synced_at': gaming_account.eccp_last_synced_at.isoformat() if gaming_account and gaming_account.eccp_last_synced_at else None,
+            } if gaming_account else None,
             'wallets': {
                 'collection_wallet': {
                     'id': collection_wallet.id if collection_wallet else None,
@@ -3888,7 +3888,7 @@ class MasterLiquiditySummaryAPIView(APIView):
     """
     Executive Master Liquidity & Quota Overview API:
     Consolidates:
-    1. Complete BaridiMob Card Balances (Salah & Utility)
+    1. Complete BaridiMob Card Balances (gaming & Utility)
     2. ECCP Official Postal Soldes (Extrait de Compte)
     3. Dedicated Activity Quotas (Gaming, eSIM, Factures)
     4. Wholesale Supplier Balances (G2Bulk & Airalo ONLY)
@@ -3936,24 +3936,24 @@ class MasterLiquiditySummaryAPIView(APIView):
 
         baridi_accounts = BaridiMobAccount.objects.filter(is_active=True).order_by('id')
 
-        salah_bm = baridi_accounts.filter(
-            models.Q(account_name__icontains='salah') | models.Q(rip_number__icontains='00799999001738866535')
+        gaming_bm = baridi_accounts.filter(
+            models.Q(account_name__icontains='gaming') | models.Q(rip_number__icontains='00799999001738866535')
         ).first()
 
         utility_bm = baridi_accounts.filter(
             models.Q(account_name__icontains='utility') | models.Q(account_name__icontains='sihaam') | models.Q(account_name__icontains='facture')
         ).first()
 
-        salah_allocation = BalanceEngine.get_salah_baridimob_allocation()
+        gaming_allocation = BalanceEngine.get_gaming_baridimob_allocation()
 
-        salah_card_balance = float(salah_bm.balance_dzd or 0.0)
-        salah_eccp_solde = float(salah_bm.eccp_balance_dzd or 0.0)
+        gaming_card_balance = float(gaming_bm.balance_dzd or 0.0)
+        gaming_eccp_solde = float(gaming_bm.eccp_balance_dzd or 0.0)
 
         utility_card_balance = float(utility_bm.balance_dzd or 0.0)
         utility_eccp_solde = float(utility_bm.eccp_balance_dzd or 0.0)
 
-        total_baridimob_card = round(salah_card_balance + utility_card_balance, 2)
-        total_eccp_postal = round(salah_eccp_solde + utility_eccp_solde, 2)
+        total_baridimob_card = round(gaming_card_balance + utility_card_balance, 2)
+        total_eccp_postal = round(gaming_eccp_solde + utility_eccp_solde, 2)
 
         # Wholesale Suppliers (G2Bulk & Airalo ONLY) - Always sync live G2Bulk directly from API
         try:
@@ -3977,13 +3977,13 @@ class MasterLiquiditySummaryAPIView(APIView):
         total_supplier_dzd = round(g2bulk_dzd + airalo_dzd, 2)
 
         # Quotas Breakdown
-        gaming_available = float(salah_allocation['gaming']['available_balance_dzd'])
-        gaming_target = float(salah_allocation['gaming']['expected_balance_dzd'])
-        gaming_shortfall = float(salah_allocation['gaming']['shortfall_dzd'])
+        gaming_available = float(gaming_allocation['gaming']['available_balance_dzd'])
+        gaming_target = float(gaming_allocation['gaming']['expected_balance_dzd'])
+        gaming_shortfall = float(gaming_allocation['gaming']['shortfall_dzd'])
 
-        esim_available = float(salah_allocation['esim']['available_balance_dzd'])
-        esim_target = float(salah_allocation['esim']['expected_balance_dzd'])
-        esim_shortfall = float(salah_allocation['esim']['shortfall_dzd'])
+        esim_available = float(gaming_allocation['esim']['available_balance_dzd'])
+        esim_target = float(gaming_allocation['esim']['expected_balance_dzd'])
+        esim_shortfall = float(gaming_allocation['esim']['shortfall_dzd'])
 
         utility_target = 50000.00
         utility_available = utility_card_balance
@@ -4045,16 +4045,16 @@ class MasterLiquiditySummaryAPIView(APIView):
             },
             'baridimob_accounts': [
                 {
-                    'id': salah_bm.id if salah_bm else 1,
-                    'account_name': 'Gaming & eSIM Operations (Salah)',
-                    'owner': 'Salah',
+                    'id': gaming_bm.id if gaming_bm else 1,
+                    'account_name': 'Gaming & eSIM Operations (gaming)',
+                    'owner': 'gaming',
                     'ccp_number': '0017388665',
                     'cle': '35',
-                    'rip_number': salah_bm.rip_number if salah_bm else '00799999001738866535',
-                    'card_balance_dzd': salah_card_balance,
-                    'eccp_solde_dzd': salah_eccp_solde,
-                    'last_synced_at': salah_bm.last_synced_at.strftime('%Y-%m-%d %H:%M') if (salah_bm and salah_bm.last_synced_at) else None,
-                    'eccp_last_synced_at': salah_bm.eccp_last_synced_at.strftime('%Y-%m-%d %H:%M') if (salah_bm and salah_bm.eccp_last_synced_at) else None,
+                    'rip_number': gaming_bm.rip_number if gaming_bm else '00799999001738866535',
+                    'card_balance_dzd': gaming_card_balance,
+                    'eccp_solde_dzd': gaming_eccp_solde,
+                    'last_synced_at': gaming_bm.last_synced_at.strftime('%Y-%m-%d %H:%M') if (gaming_bm and gaming_bm.last_synced_at) else None,
+                    'eccp_last_synced_at': gaming_bm.eccp_last_synced_at.strftime('%Y-%m-%d %H:%M') if (gaming_bm and gaming_bm.eccp_last_synced_at) else None,
                     'activity': 'GAMING_AND_ESIM',
                     'linked_route': '/gaming',
                 },
@@ -4081,7 +4081,7 @@ class MasterLiquiditySummaryAPIView(APIView):
                     'target_quota_dzd': gaming_target,
                     'shortfall_dzd': gaming_shortfall,
                     'coverage_pct': round((gaming_available / gaming_target * 100), 1) if gaming_target > 0 else 0,
-                    'sourcing_solde_dzd': salah_eccp_solde,
+                    'sourcing_solde_dzd': gaming_eccp_solde,
                     'wallet_balance_dzt': gaming_wallets_dzt,
                     'is_wallet_sufficient': gaming_wallets_dzt >= gaming_available,
                     'linked_route': '/gaming',
@@ -4093,7 +4093,7 @@ class MasterLiquiditySummaryAPIView(APIView):
                     'target_quota_dzd': esim_target,
                     'shortfall_dzd': esim_shortfall,
                     'coverage_pct': round((esim_available / esim_target * 100), 1) if esim_target > 0 else 0,
-                    'sourcing_solde_dzd': salah_eccp_solde,
+                    'sourcing_solde_dzd': gaming_eccp_solde,
                     'wallet_balance_dzt': esim_wallets_dzt,
                     'is_wallet_sufficient': esim_wallets_dzt >= esim_available,
                     'linked_route': '/withdrawals/esim',
@@ -4177,7 +4177,7 @@ class UnifiedAccountsMonitoringAPIView(APIView):
         gaming_target = float(post_quotas['gaming_target_quota'])
         esim_target = float(post_quotas['esim_target_quota'])
         factures_target = float(post_quotas['factures_target_quota'])
-        salah_allocation = BalanceEngine.get_salah_baridimob_allocation()
+        gaming_allocation = BalanceEngine.get_gaming_baridimob_allocation()
 
         # Date & Range Filtering Parameters (supports start_date, end_date, single date, and preset ranges)
         start_date_str = request.query_params.get('start_date', '').strip()
@@ -4364,7 +4364,7 @@ class UnifiedAccountsMonitoringAPIView(APIView):
                 'activity': 'Gaming',
                 'source': 'BaridiMob',
                 'currency': 'DZD',
-                'account_number': 'Salah (00799999001738866535)',
+                'account_number': 'gaming (00799999001738866535)',
                 'target_quota_dzd': gaming_target,
                 'linked_account_id': 3,
                 'badge': 'Edahabia Card',
@@ -4376,7 +4376,7 @@ class UnifiedAccountsMonitoringAPIView(APIView):
                 'activity': 'Gaming',
                 'source': 'ECCP',
                 'currency': 'DZD',
-                'account_number': 'CCP 0017388665 Clé 35 (Salah)',
+                'account_number': 'CCP 0017388665 Clé 35 (gaming)',
                 'target_quota_dzd': gaming_target,
                 'linked_account_id': 3,
                 'badge': 'Extrait de Compte',
@@ -4388,7 +4388,7 @@ class UnifiedAccountsMonitoringAPIView(APIView):
                 'activity': 'eSIM',
                 'source': 'BaridiMob',
                 'currency': 'DZD',
-                'account_number': 'Salah (00799999001738866535)',
+                'account_number': 'gaming (00799999001738866535)',
                 'target_quota_dzd': esim_target,
                 'linked_account_id': 3,
                 'badge': 'Edahabia Card',
@@ -4400,7 +4400,7 @@ class UnifiedAccountsMonitoringAPIView(APIView):
                 'activity': 'eSIM',
                 'source': 'ECCP',
                 'currency': 'DZD',
-                'account_number': 'CCP 0017388665 Clé 35 (Salah)',
+                'account_number': 'CCP 0017388665 Clé 35 (gaming)',
                 'target_quota_dzd': esim_target,
                 'linked_account_id': 3,
                 'badge': 'Extrait de Compte',
@@ -4533,15 +4533,15 @@ class UnifiedAccountsMonitoringAPIView(APIView):
         )
 
         # -------------------------------------------------------------
-        # Dedicated Partitions: Partition 1 (Salah) & Partition 2 (Sihaam)
+        # Dedicated Partitions: Partition 1 (gaming) & Partition 2 (Sihaam)
         # -------------------------------------------------------------
-        salah_bm = BaridiMobAccount.objects.filter(id=3).first() or BaridiMobAccount.objects.filter(account_name__icontains='salah').first()
+        gaming_bm = BaridiMobAccount.objects.filter(id=3).first() or BaridiMobAccount.objects.filter(account_name__icontains='gaming').first()
         sihaam_bm = BaridiMobAccount.objects.filter(id=1).first() or BaridiMobAccount.objects.filter(account_name__icontains='sihaam').first()
 
-        # Build Salah & Sihaam Transaction history lists
-        salah_tx_all = list(BaridiMobTransaction.objects.filter(account=salah_bm).order_by('transaction_date')) if salah_bm else []
-        salah_cur_bal = float(salah_bm.balance_dzd or 0.0)
-        salah_eccp_cur = float(salah_bm.eccp_balance_dzd or 0.0)
+        # Build gaming & Sihaam Transaction history lists
+        gaming_tx_all = list(BaridiMobTransaction.objects.filter(account=gaming_bm).order_by('transaction_date')) if gaming_bm else []
+        gaming_cur_bal = float(gaming_bm.balance_dzd or 0.0)
+        gaming_eccp_cur = float(gaming_bm.eccp_balance_dzd or 0.0)
 
         sihaam_tx_all = list(BaridiMobTransaction.objects.filter(account=sihaam_bm).order_by('transaction_date')) if sihaam_bm else []
         sihaam_cur_bal = float(sihaam_bm.balance_dzd or 0.0)
@@ -4549,39 +4549,39 @@ class UnifiedAccountsMonitoringAPIView(APIView):
 
         # Historical balance lookup as of as_of_dt (point-in-time balance inquiry)
         if as_of_dt:
-            salah_future = [t for t in salah_tx_all if t.transaction_date > as_of_dt]
-            salah_as_of_bal = round(salah_cur_bal - sum(float(t.amount) for t in salah_future), 2)
+            gaming_future = [t for t in gaming_tx_all if t.transaction_date > as_of_dt]
+            gaming_as_of_bal = round(gaming_cur_bal - sum(float(t.amount) for t in gaming_future), 2)
             sihaam_future = [t for t in sihaam_tx_all if t.transaction_date > as_of_dt]
             sihaam_as_of_bal = round(sihaam_cur_bal - sum(float(t.amount) for t in sihaam_future), 2)
 
-            if salah_as_of_bal >= (gaming_target + esim_target):
+            if gaming_as_of_bal >= (gaming_target + esim_target):
                 esim_as_of = esim_target
-                gaming_as_of = round(salah_as_of_bal - esim_as_of, 2)
+                gaming_as_of = round(gaming_as_of_bal - esim_as_of, 2)
             elif (gaming_target + esim_target) > 0:
                 ratio = gaming_target / (gaming_target + esim_target)
-                gaming_as_of = round(salah_as_of_bal * ratio, 2)
-                esim_as_of = round(salah_as_of_bal - gaming_as_of, 2)
+                gaming_as_of = round(gaming_as_of_bal * ratio, 2)
+                esim_as_of = round(gaming_as_of_bal - gaming_as_of, 2)
             else:
-                gaming_as_of = salah_as_of_bal
+                gaming_as_of = gaming_as_of_bal
                 esim_as_of = 0.0
         else:
-            salah_as_of_bal = salah_cur_bal
+            gaming_as_of_bal = gaming_cur_bal
             sihaam_as_of_bal = sihaam_cur_bal
-            gaming_as_of = float(salah_allocation['gaming']['available_balance_dzd'])
-            esim_as_of = float(salah_allocation['esim']['available_balance_dzd'])
+            gaming_as_of = float(gaming_allocation['gaming']['available_balance_dzd'])
+            esim_as_of = float(gaming_allocation['esim']['available_balance_dzd'])
 
         as_of_snapshot = {
             'is_filtered': bool(as_of_dt),
             'selected_hour': f"{target_hour:02d}:00" if target_hour is not None else None,
             'as_of_datetime': as_of_dt.strftime('%Y-%m-%d %H:00') if as_of_dt else None,
             'time_mode': time_mode,
-            'salah': {
-                'balance_at_time_dzd': salah_as_of_bal,
-                'live_balance_dzd': salah_cur_bal,
-                'difference_from_live_dzd': round(salah_as_of_bal - salah_cur_bal, 2),
+            'gaming': {
+                'balance_at_time_dzd': gaming_as_of_bal,
+                'live_balance_dzd': gaming_cur_bal,
+                'difference_from_live_dzd': round(gaming_as_of_bal - gaming_cur_bal, 2),
                 'gaming_quota_dzd': gaming_as_of,
                 'esim_quota_dzd': esim_as_of,
-                'eccp_solde_dzd': salah_eccp_cur,
+                'eccp_solde_dzd': gaming_eccp_cur,
             },
             'sihaam': {
                 'balance_at_time_dzd': sihaam_as_of_bal,
@@ -4591,12 +4591,12 @@ class UnifiedAccountsMonitoringAPIView(APIView):
             }
         }
 
-        # Build Salah's Graph Points (1-hour interval sampling with real ledger balance)
-        salah_graph = []
+        # Build gaming's Graph Points (1-hour interval sampling with real ledger balance)
+        gaming_graph = []
         for slot in slots:
-            future_txs = [t for t in salah_tx_all if t.transaction_date > slot]
+            future_txs = [t for t in gaming_tx_all if t.transaction_date > slot]
             future_diff = sum(float(t.amount) for t in future_txs)
-            real_card_bal = round(salah_cur_bal - future_diff, 2)
+            real_card_bal = round(gaming_cur_bal - future_diff, 2)
 
             if real_card_bal >= (gaming_target + esim_target):
                 e_val = esim_target
@@ -4609,66 +4609,66 @@ class UnifiedAccountsMonitoringAPIView(APIView):
                 g_val = real_card_bal
                 e_val = 0.0
 
-            salah_graph.append({
-                'id': f"salah-{slot.strftime('%Y%m%d%H%M')}",
+            gaming_graph.append({
+                'id': f"gaming-{slot.strftime('%Y%m%d%H%M')}",
                 'timestamp': slot.strftime('%H:00') if days_span <= 1 else slot.strftime('%m/%d %H:%M'),
                 'full_date': slot.strftime('%Y-%m-%d %H:%M'),
                 'date_label': slot.strftime('%b %d'),
                 'time_label': slot.strftime('%H:%M'),
                 'baridimob_dzd': real_card_bal,
-                'eccp_dzd': salah_eccp_cur,
+                'eccp_dzd': gaming_eccp_cur,
                 'gaming_quota_dzd': g_val,
                 'esim_quota_dzd': e_val,
                 'trigger': 'REAL_LEDGER',
             })
 
-        # Compute Period Statistics for Salah
-        salah_period_txs = [t for t in salah_tx_all if tx_start <= t.transaction_date <= tx_end] if salah_tx_all else []
-        salah_inflows = sum(float(t.amount) for t in salah_period_txs if float(t.amount) > 0)
-        salah_outflows = sum(abs(float(t.amount)) for t in salah_period_txs if float(t.amount) < 0)
-        salah_start_bal = salah_graph[0]['baridimob_dzd'] if salah_graph else salah_cur_bal
-        salah_end_bal = salah_graph[-1]['baridimob_dzd'] if salah_graph else salah_cur_bal
-        salah_min_bal = min((p['baridimob_dzd'] for p in salah_graph), default=salah_cur_bal)
-        salah_max_bal = max((p['baridimob_dzd'] for p in salah_graph), default=salah_cur_bal)
+        # Compute Period Statistics for gaming
+        gaming_period_txs = [t for t in gaming_tx_all if tx_start <= t.transaction_date <= tx_end] if gaming_tx_all else []
+        gaming_inflows = sum(float(t.amount) for t in gaming_period_txs if float(t.amount) > 0)
+        gaming_outflows = sum(abs(float(t.amount)) for t in gaming_period_txs if float(t.amount) < 0)
+        gaming_start_bal = gaming_graph[0]['baridimob_dzd'] if gaming_graph else gaming_cur_bal
+        gaming_end_bal = gaming_graph[-1]['baridimob_dzd'] if gaming_graph else gaming_cur_bal
+        gaming_min_bal = min((p['baridimob_dzd'] for p in gaming_graph), default=gaming_cur_bal)
+        gaming_max_bal = max((p['baridimob_dzd'] for p in gaming_graph), default=gaming_cur_bal)
 
-        salah_period_stats = {
-            'start_balance_dzd': salah_start_bal,
-            'end_balance_dzd': salah_end_bal,
-            'total_inflow_dzd': round(salah_inflows, 2),
-            'total_outflow_dzd': round(salah_outflows, 2),
-            'net_change_dzd': round(salah_inflows - salah_outflows, 2),
-            'min_balance_dzd': salah_min_bal,
-            'max_balance_dzd': salah_max_bal,
-            'total_count': len(salah_period_txs),
+        gaming_period_stats = {
+            'start_balance_dzd': gaming_start_bal,
+            'end_balance_dzd': gaming_end_bal,
+            'total_inflow_dzd': round(gaming_inflows, 2),
+            'total_outflow_dzd': round(gaming_outflows, 2),
+            'net_change_dzd': round(gaming_inflows - gaming_outflows, 2),
+            'min_balance_dzd': gaming_min_bal,
+            'max_balance_dzd': gaming_max_bal,
+            'total_count': len(gaming_period_txs),
         }
 
-        # Build Salah's Stored Daily Transactions (filtered by date/range)
-        salah_tx_list = []
-        if salah_bm:
-            salah_cur = float(salah_bm.balance_dzd)
-            running_salah = salah_as_of_bal if as_of_dt else salah_cur
-            raw_salah_txs = BaridiMobTransaction.objects.filter(account=salah_bm, **tx_filter).order_by('-transaction_date')
-            has_salah_txs = raw_salah_txs.exists()
-            display_salah_txs = list(raw_salah_txs[:60]) if has_salah_txs else list(BaridiMobTransaction.objects.filter(account=salah_bm).order_by('-transaction_date')[:15])
+        # Build gaming's Stored Daily Transactions (filtered by date/range)
+        gaming_tx_list = []
+        if gaming_bm:
+            gaming_cur = float(gaming_bm.balance_dzd)
+            running_gaming = gaming_as_of_bal if as_of_dt else gaming_cur
+            raw_gaming_txs = BaridiMobTransaction.objects.filter(account=gaming_bm, **tx_filter).order_by('-transaction_date')
+            has_gaming_txs = raw_gaming_txs.exists()
+            display_gaming_txs = list(raw_gaming_txs[:60]) if has_gaming_txs else list(BaridiMobTransaction.objects.filter(account=gaming_bm).order_by('-transaction_date')[:15])
 
-            for tx in display_salah_txs:
+            for tx in display_gaming_txs:
                 amt = float(tx.amount)
-                prev_b = round(running_salah - amt, 2)
-                salah_tx_list.append({
+                prev_b = round(running_gaming - amt, 2)
+                gaming_tx_list.append({
                     'tid': tx.tid,
                     'ref_num': tx.ref_num or '—',
                     'amount_dzd': amt,
                     'is_credit': amt > 0,
                     'fee_amount_dzd': float(tx.fee_amount) if tx.fee_amount else 0.0,
                     'previous_balance_dzd': prev_b,
-                    'new_balance_dzd': running_salah,
+                    'new_balance_dzd': running_gaming,
                     'description': tx.description or tx.transaction_type or 'Transfer / Operational Refill',
                     'operation_code': tx.operation_code or 'POSTAL_OP',
                     'quota_tag': 'Gaming (G2Bulk)' if abs(amt) > 1000 else 'eSIM Refill',
                     'timestamp': tx.transaction_date.strftime('%Y-%m-%d %H:%M'),
-                    'is_fallback': not has_salah_txs,
+                    'is_fallback': not has_gaming_txs,
                 })
-                running_salah = prev_b
+                running_gaming = prev_b
 
         # Build Sihaam's Graph Points (with real ledger balance across the date range)
         sihaam_graph = []
@@ -4737,10 +4737,10 @@ class UnifiedAccountsMonitoringAPIView(APIView):
                 })
                 running_sihaam = prev_b
 
-        # Combined Dual Trajectory Graph (Salah + Sihaam total postal liquidity)
+        # Combined Dual Trajectory Graph (gaming + Sihaam total postal liquidity)
         combined_graph = []
         for idx, slot in enumerate(slots):
-            s_pt = salah_graph[idx] if idx < len(salah_graph) else None
+            s_pt = gaming_graph[idx] if idx < len(gaming_graph) else None
             h_pt = sihaam_graph[idx] if idx < len(sihaam_graph) else None
             s_bm = s_pt['baridimob_dzd'] if s_pt else 0.0
             h_bm = h_pt['baridimob_dzd'] if h_pt else 0.0
@@ -4756,16 +4756,16 @@ class UnifiedAccountsMonitoringAPIView(APIView):
                 'total_baridimob_dzd': round(s_bm + h_bm, 2),
                 'total_eccp_dzd': round(s_ec + h_ec, 2),
                 'total_postal_liquidity_dzd': round(s_bm + h_bm + s_ec + h_ec, 2),
-                'salah_baridimob_dzd': s_bm,
+                'gaming_baridimob_dzd': s_bm,
                 'sihaam_baridimob_dzd': h_bm,
             })
 
-        gaming_target_val = float(salah_allocation['gaming']['expected_balance_dzd'])
-        esim_target_val = float(salah_allocation['esim']['expected_balance_dzd'])
+        gaming_target_val = float(gaming_allocation['gaming']['expected_balance_dzd'])
+        esim_target_val = float(gaming_allocation['esim']['expected_balance_dzd'])
         gaming_cov = round((gaming_as_of / gaming_target_val * 100), 1) if gaming_target_val > 0 else 100.0
         esim_cov = round((esim_as_of / esim_target_val * 100), 1) if esim_target_val > 0 else 100.0
 
-        salah_subsystems = {
+        gaming_subsystems = {
             'gaming': {
                 'id': 'subsystem_gaming',
                 'title': 'Gaming Wholesale Subsystem',
@@ -4773,12 +4773,12 @@ class UnifiedAccountsMonitoringAPIView(APIView):
                 'target_quota_dzd': gaming_target_val,
                 'allocated_balance_dzd': gaming_as_of,
                 'coverage_pct': gaming_cov,
-                'capital_dzd': float(salah_allocation['gaming'].get('capital_dzd', 0.0)),
-                'profit_dzd': float(salah_allocation['gaming'].get('profit_dzd', 0.0)),
-                'external_assets_dzd': float(salah_allocation['gaming'].get('external_assets_dzd', 0.0)),
-                'shortfall_dzd': float(salah_allocation['gaming'].get('shortfall_dzd', 0.0)),
-                'period_inflow_dzd': round(sum(float(t.amount) for t in salah_period_txs if float(t.amount) > 0 and 'Gaming' in (t.description or '')), 2) or round(salah_inflows * 0.85, 2),
-                'period_outflow_dzd': round(sum(abs(float(t.amount)) for t in salah_period_txs if float(t.amount) < 0 and 'Gaming' in (t.description or '')), 2) or round(salah_outflows * 0.90, 2),
+                'capital_dzd': float(gaming_allocation['gaming'].get('capital_dzd', 0.0)),
+                'profit_dzd': float(gaming_allocation['gaming'].get('profit_dzd', 0.0)),
+                'external_assets_dzd': float(gaming_allocation['gaming'].get('external_assets_dzd', 0.0)),
+                'shortfall_dzd': float(gaming_allocation['gaming'].get('shortfall_dzd', 0.0)),
+                'period_inflow_dzd': round(sum(float(t.amount) for t in gaming_period_txs if float(t.amount) > 0 and 'Gaming' in (t.description or '')), 2) or round(gaming_inflows * 0.85, 2),
+                'period_outflow_dzd': round(sum(abs(float(t.amount)) for t in gaming_period_txs if float(t.amount) < 0 and 'Gaming' in (t.description or '')), 2) or round(gaming_outflows * 0.90, 2),
             },
             'esim': {
                 'id': 'subsystem_esim',
@@ -4787,68 +4787,68 @@ class UnifiedAccountsMonitoringAPIView(APIView):
                 'target_quota_dzd': esim_target_val,
                 'allocated_balance_dzd': esim_as_of,
                 'coverage_pct': esim_cov,
-                'capital_dzd': float(salah_allocation['esim'].get('capital_dzd', 0.0)),
-                'profit_dzd': float(salah_allocation['esim'].get('profit_dzd', 0.0)),
-                'external_assets_dzd': float(salah_allocation['esim'].get('external_assets_dzd', 0.0)),
-                'shortfall_dzd': float(salah_allocation['esim'].get('shortfall_dzd', 0.0)),
-                'period_inflow_dzd': round(sum(float(t.amount) for t in salah_period_txs if float(t.amount) > 0 and 'eSIM' in (t.description or '')), 2) or round(salah_inflows * 0.15, 2),
-                'period_outflow_dzd': round(sum(abs(float(t.amount)) for t in salah_period_txs if float(t.amount) < 0 and 'eSIM' in (t.description or '')), 2) or round(salah_outflows * 0.10, 2),
+                'capital_dzd': float(gaming_allocation['esim'].get('capital_dzd', 0.0)),
+                'profit_dzd': float(gaming_allocation['esim'].get('profit_dzd', 0.0)),
+                'external_assets_dzd': float(gaming_allocation['esim'].get('external_assets_dzd', 0.0)),
+                'shortfall_dzd': float(gaming_allocation['esim'].get('shortfall_dzd', 0.0)),
+                'period_inflow_dzd': round(sum(float(t.amount) for t in gaming_period_txs if float(t.amount) > 0 and 'eSIM' in (t.description or '')), 2) or round(gaming_inflows * 0.15, 2),
+                'period_outflow_dzd': round(sum(abs(float(t.amount)) for t in gaming_period_txs if float(t.amount) < 0 and 'eSIM' in (t.description or '')), 2) or round(gaming_outflows * 0.10, 2),
             },
             'summary': {
-                'total_balance_dzd': salah_as_of_bal,
+                'total_balance_dzd': gaming_as_of_bal,
                 'total_allocated_dzd': round(gaming_as_of + esim_as_of, 2),
-                'gaming_share_pct': round((gaming_as_of / salah_as_of_bal * 100), 1) if salah_as_of_bal > 0 else 50.0,
-                'esim_share_pct': round((esim_as_of / salah_as_of_bal * 100), 1) if salah_as_of_bal > 0 else 50.0,
-                'surplus_dzd': float(salah_allocation.get('surplus_dzd', 0.0)),
-                'variance_dzd': float(salah_allocation.get('variance_dzd', 0.0)),
+                'gaming_share_pct': round((gaming_as_of / gaming_as_of_bal * 100), 1) if gaming_as_of_bal > 0 else 50.0,
+                'esim_share_pct': round((esim_as_of / gaming_as_of_bal * 100), 1) if gaming_as_of_bal > 0 else 50.0,
+                'surplus_dzd': float(gaming_allocation.get('surplus_dzd', 0.0)),
+                'variance_dzd': float(gaming_allocation.get('variance_dzd', 0.0)),
             }
         }
 
         partitions = {
-            'salah': {
-                'id': 'partition_salah',
-                'owner': 'Salah',
-                'title': 'Salah Operational Account (Gaming & eSIM)',
+            'gaming': {
+                'id': 'partition_gaming',
+                'owner': 'gaming',
+                'title': 'gaming Operational Account (Gaming & eSIM)',
                 'badge': 'Gaming + eSIM',
                 'account_number': '00799999001738866535',
                 'ccp_number': '0017388665',
                 'cle': '35',
-                'subsystems': salah_subsystems,
+                'subsystems': gaming_subsystems,
                 'baridimob': {
                     'name': 'BaridiMob Edahabia Electronic Card',
-                    'current_balance_dzd': float(salah_bm.balance_dzd) if (salah_bm and salah_bm.balance_dzd is not None) else 0.0,
-                    'balance_at_time_dzd': salah_as_of_bal,
-                    'difference_from_live_dzd': round(salah_as_of_bal - salah_cur_bal, 2),
+                    'current_balance_dzd': float(gaming_bm.balance_dzd) if (gaming_bm and gaming_bm.balance_dzd is not None) else 0.0,
+                    'balance_at_time_dzd': gaming_as_of_bal,
+                    'difference_from_live_dzd': round(gaming_as_of_bal - gaming_cur_bal, 2),
                     'is_time_filtered': bool(as_of_dt),
-                    'previous_balance_dzd': float(salah_bm.balance_dzd) if (salah_bm and salah_bm.balance_dzd is not None) else 0.0,
+                    'previous_balance_dzd': float(gaming_bm.balance_dzd) if (gaming_bm and gaming_bm.balance_dzd is not None) else 0.0,
                     'change_dzd': 0.0,
-                    'last_sync': salah_bm.last_synced_at.strftime('%Y-%m-%d %H:%M') if (salah_bm and salah_bm.last_synced_at) else 'Live',
+                    'last_sync': gaming_bm.last_synced_at.strftime('%Y-%m-%d %H:%M') if (gaming_bm and gaming_bm.last_synced_at) else 'Live',
                     'quotas': {
                         'gaming_quota_dzd': gaming_as_of,
-                        'gaming_target_dzd': float(salah_allocation['gaming']['expected_balance_dzd']),
-                        'gaming_coverage_pct': round((gaming_as_of / salah_allocation['gaming']['expected_balance_dzd'] * 100), 1) if salah_allocation['gaming']['expected_balance_dzd'] > 0 else 100.0,
+                        'gaming_target_dzd': float(gaming_allocation['gaming']['expected_balance_dzd']),
+                        'gaming_coverage_pct': round((gaming_as_of / gaming_allocation['gaming']['expected_balance_dzd'] * 100), 1) if gaming_allocation['gaming']['expected_balance_dzd'] > 0 else 100.0,
                         'esim_quota_dzd': esim_as_of,
-                        'esim_target_dzd': float(salah_allocation['esim']['expected_balance_dzd']),
-                        'esim_coverage_pct': round((esim_as_of / salah_allocation['esim']['expected_balance_dzd'] * 100), 1) if salah_allocation['esim']['expected_balance_dzd'] > 0 else 100.0,
+                        'esim_target_dzd': float(gaming_allocation['esim']['expected_balance_dzd']),
+                        'esim_coverage_pct': round((esim_as_of / gaming_allocation['esim']['expected_balance_dzd'] * 100), 1) if gaming_allocation['esim']['expected_balance_dzd'] > 0 else 100.0,
                     }
                 },
                 'eccp': {
                     'name': 'Algérie Poste ECCP Extrait de Compte (Root Postal Solde)',
-                    'current_balance_dzd': float(salah_bm.eccp_balance_dzd or 0.0),
-                    'previous_balance_dzd': float(salah_bm.eccp_balance_dzd or 0.0),
+                    'current_balance_dzd': float(gaming_bm.eccp_balance_dzd or 0.0),
+                    'previous_balance_dzd': float(gaming_bm.eccp_balance_dzd or 0.0),
                     'change_dzd': 0.0,
-                    'last_sync': salah_bm.eccp_last_synced_at.strftime('%Y-%m-%d %H:%M') if (salah_bm and salah_bm.eccp_last_synced_at) else 'Live',
+                    'last_sync': gaming_bm.eccp_last_synced_at.strftime('%Y-%m-%d %H:%M') if (gaming_bm and gaming_bm.eccp_last_synced_at) else 'Live',
                     'quotas': {
                         'gaming_quota_dzd': gaming_as_of,
-                        'gaming_target_dzd': float(salah_allocation['gaming']['expected_balance_dzd']),
+                        'gaming_target_dzd': float(gaming_allocation['gaming']['expected_balance_dzd']),
                         'esim_quota_dzd': esim_as_of,
-                        'esim_target_dzd': float(salah_allocation['esim']['expected_balance_dzd']),
+                        'esim_target_dzd': float(gaming_allocation['esim']['expected_balance_dzd']),
                     }
                 },
-                'graph_points': salah_graph,
-                'period_stats': salah_period_stats,
-                'daily_stats': salah_period_stats,
-                'daily_transactions': salah_tx_list,
+                'graph_points': gaming_graph,
+                'period_stats': gaming_period_stats,
+                'daily_stats': gaming_period_stats,
+                'daily_transactions': gaming_tx_list,
             },
             'sihaam': {
                 'id': 'partition_sihaam',
@@ -5426,7 +5426,7 @@ class DailyOperationsProfitsAPIView(APIView):
 class IdoomMonitoringAPIView(APIView):
     """
     Dedicated Real-Time Idoom (Algérie Télécom) Financial & Stock Monitoring API View.
-    Designed for Service Operators (Soufiane) and Administrators.
+    Designed for Service Operators (track) and Administrators.
     100% Read-Only: zero financial execution or mutation actions.
     """
     permission_classes = [permissions.AllowAny]
@@ -5499,7 +5499,7 @@ class IdoomMonitoringAPIView(APIView):
 class IdoomWithdrawalsRefillAPIView(APIView):
     """
     Dedicated Idoom Card Stock Refill & Dual-Action Withdrawal Hub.
-    Restricted strictly to Treasury Officers (Walid) and Administrators.
+    Restricted strictly to Treasury Officers (faming) and Administrators.
     Capabilities:
     - Pre-flight check: locks refill if any transaction is ON_PROCESSING.
     - Upload & parse batch voucher card files (.csv, .xlsx, .txt, .json).
@@ -5825,13 +5825,13 @@ class IdoomWithdrawalsRefillAPIView(APIView):
                 withdrawal_record=withdrawal,
             )
 
-        # Real-time Quota Refill Notification to Soufiane & Admin
+        # Real-time Quota Refill Notification to track & Admin
         try:
             from .services.quota_notification_service import notify_quota_refill
             notify_quota_refill(
                 subsystem='IDOOM',
                 amount_dzd=total_cost,
-                operator=request.user if (request.user and request.user.is_authenticated) else "Walid (Withdrawal Officer)",
+                operator=request.user if (request.user and request.user.is_authenticated) else "faming (Withdrawal Officer)",
                 reference=batch_ref,
                 notes=f"Procurement of {total_count} Idoom voucher cards. Total Cost: {total_cost:,.2f} DZD.",
                 async_send=True,
@@ -5925,7 +5925,7 @@ class IdoomRefundRollbackAPIView(APIView):
 class IPTVMonitoringAPIView(APIView):
     """
     Dedicated Real-Time IPTV (Subscriptions & Vouchers) Financial & Stock Monitoring API View.
-    Designed for Service Operators (Soufiane) and Administrators.
+    Designed for Service Operators (track) and Administrators.
     100% Read-Only: zero financial execution or mutation actions.
     """
     permission_classes = [permissions.AllowAny]
@@ -5998,7 +5998,7 @@ class IPTVMonitoringAPIView(APIView):
 class IPTVWithdrawalsRefillAPIView(APIView):
     """
     Dedicated IPTV Subscription Stock Refill & Dual-Action Withdrawal Hub.
-    Restricted strictly to Treasury Officers (Walid) and Administrators.
+    Restricted strictly to Treasury Officers (faming) and Administrators.
     Capabilities:
     - Pre-flight check: locks refill if any transaction is ON_PROCESSING.
     - Upload & parse batch voucher card files (.csv, .xlsx, .txt, .json).
@@ -6330,13 +6330,13 @@ class IPTVWithdrawalsRefillAPIView(APIView):
                 withdrawal_record=withdrawal,
             )
 
-        # Real-time Quota Refill Notification to Soufiane & Admin
+        # Real-time Quota Refill Notification to track & Admin
         try:
             from .services.quota_notification_service import notify_quota_refill
             notify_quota_refill(
                 subsystem='IPTV',
                 amount_dzd=total_cost,
-                operator=request.user if (request.user and request.user.is_authenticated) else "Walid (Withdrawal Officer)",
+                operator=request.user if (request.user and request.user.is_authenticated) else "faming (Withdrawal Officer)",
                 reference=batch_ref,
                 notes=f"Procurement of {total_count} IPTV subscription vouchers. Total Cost: {total_cost:,.2f} DZD.",
                 async_send=True,
@@ -6633,7 +6633,7 @@ class FlexyOperationsMonitoringAPIView(APIView):
 class FlexyWithdrawalsRefillAPIView(APIView):
     """
     Dedicated Flexy Refill & Dual-Sweep Withdrawal Hub.
-    Restricted to Treasury Officers (Walid) and Super Administrators.
+    Restricted to Treasury Officers (faming) and Super Administrators.
     Capabilities:
     - One-Click automated topup from Treasury DZT wallet to Shemsnet.
     - Dynamic bonus synchronization from Shemsnet.
@@ -6773,7 +6773,7 @@ class FlexyWithdrawalsRefillAPIView(APIView):
                     notify_quota_refill(
                         subsystem='FLEXY',
                         amount_dzd=amount_dzt,
-                        operator=request.user if (request.user and request.user.is_authenticated) else "Walid (Withdrawal Officer)",
+                        operator=request.user if (request.user and request.user.is_authenticated) else "faming (Withdrawal Officer)",
                         reference=res.get('reference') or res.get('topup_id') or 'FLEXY-TOPUP',
                         notes=f"Shemsnet Flexy balance topup. New Shemsnet Solde: {res.get('new_balance', 'N/A')} DZD.",
                         async_send=True,

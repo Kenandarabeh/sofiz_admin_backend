@@ -304,10 +304,10 @@ class BalanceEngine:
             system_type=OperationalFamily.ESIM
         ).aggregate(total=Sum('amount_dzd'))['total'] or Decimal("0.00")
 
-        # 6. Available eSIM Cash in Shared BaridiMob Account (Salah)
-        salah_allocation = cls.get_salah_baridimob_allocation()
-        esim_baridi_available = Decimal(str(salah_allocation['esim']['available_balance_dzd']))
-        esim_baridi_expected = Decimal(str(salah_allocation['esim']['expected_balance_dzd']))
+        # 6. Available eSIM Cash in Shared BaridiMob Account (gaming)
+        gaming_allocation = cls.get_gaming_baridimob_allocation()
+        esim_baridi_available = Decimal(str(gaming_allocation['esim']['available_balance_dzd']))
+        esim_baridi_expected = Decimal(str(gaming_allocation['esim']['expected_balance_dzd']))
 
         # Left Side Total (Assets + In-Transit + Available BaridiMob + Expenses)
         left_side = (bybit_dzd_sum + airalo_dzd_sum + esim_wallets_dzt + in_transit_dzd + esim_expenses + esim_baridi_available).quantize(Decimal("0.01"))
@@ -347,7 +347,7 @@ class BalanceEngine:
             "esim_profits": esim_profits,
             "right_side_total": right_side,
             "sync_reports": sync_reports,
-            "salah_allocation": salah_allocation
+            "gaming_allocation": gaming_allocation
         }
 
     @classmethod
@@ -774,14 +774,14 @@ class BalanceEngine:
         return cls.get_post_withdrawal_quotas()
 
     @classmethod
-    def get_walid_withdrawal_quotas(cls) -> dict:
+    def get_faming_withdrawal_quotas(cls) -> dict:
         """Backward-compatible alias for get_post_withdrawal_quotas."""
         return cls.get_post_withdrawal_quotas()
 
     @classmethod
-    def get_salah_baridimob_allocation(cls) -> dict:
+    def get_gaming_baridimob_allocation(cls) -> dict:
         """
-        Computes mathematical breakdown of Salah's shared BaridiMob account
+        Computes mathematical breakdown of gaming's shared BaridiMob account
         (RIP: 00799999001738866535) between Gaming, eSIM, and XLM subsystems:
         1. Operational withdrawal quota for Gaming
         2. Operational withdrawal quota for eSIM
@@ -848,11 +848,11 @@ class BalanceEngine:
         esim_external = (bybit_dzd + airalo_dzd + esim_wallets_dzt + esim_in_transit + esim_expenses).quantize(Decimal('0.01'))
 
         # Real postal account details (Using official ECCP Extrait de Compte solde)
-        salah_acc = BaridiMobAccount.objects.filter(
-            models.Q(rip_number__icontains='00799999001738866535') | models.Q(account_name__icontains='salah')
+        gaming_acc = BaridiMobAccount.objects.filter(
+            models.Q(rip_number__icontains='00799999001738866535') | models.Q(account_name__icontains='gaming')
         ).first()
-        eccp_solde = salah_acc.eccp_balance_dzd if (salah_acc and salah_acc.eccp_balance_dzd and salah_acc.eccp_balance_dzd > Decimal('0.00')) else Decimal('0.00')
-        baridimob_card_balance = salah_acc.balance_dzd if salah_acc else Decimal('0.00')
+        eccp_solde = gaming_acc.eccp_balance_dzd if (gaming_acc and gaming_acc.eccp_balance_dzd and gaming_acc.eccp_balance_dzd > Decimal('0.00')) else Decimal('0.00')
+        baridimob_card_balance = gaming_acc.balance_dzd if gaming_acc else Decimal('0.00')
         real_balance = eccp_solde
 
         expected_total = (expected_gaming + expected_esim + expected_xlm).quantize(Decimal('0.01'))
@@ -881,14 +881,14 @@ class BalanceEngine:
             shortfall = Decimal('0.00')
 
         return {
-            'account_id': salah_acc.id if salah_acc else None,
+            'account_id': gaming_acc.id if gaming_acc else None,
             'account_name': "Gaming Operational Account",
-            'rip_number': salah_acc.rip_number if salah_acc else "00799999001738866535",
-            'account_email': salah_acc.account_email if salah_acc else "game",
+            'rip_number': gaming_acc.rip_number if gaming_acc else "00799999001738866535",
+            'account_email': gaming_acc.account_email if gaming_acc else "game",
             'real_balance_dzd': float(real_balance),
             'eccp_balance_dzd': float(real_balance),
             'baridimob_card_balance_dzd': float(baridimob_card_balance),
-            'eccp_last_synced_at': getattr(salah_acc, 'eccp_last_synced_at', None).isoformat() if salah_acc and getattr(salah_acc, 'eccp_last_synced_at', None) else None,
+            'eccp_last_synced_at': getattr(gaming_acc, 'eccp_last_synced_at', None).isoformat() if gaming_acc and getattr(gaming_acc, 'eccp_last_synced_at', None) else None,
             'expected_total_dzd': float(expected_total),
             'variance_dzd': float(variance),
             'is_balanced': abs(variance) <= Decimal('1.00'),

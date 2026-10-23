@@ -18,7 +18,7 @@ INSTITUTIONAL_ROLES = {
         'models': '__all__'
     },
     'Game Family Operator': {
-        'description': 'Authorized for Gaming orders, purchasing USDT via Binance P2P using Salah BaridiMob funds, and filling/depositing wholesale inventory into G2Bulk supplier account.',
+        'description': 'Authorized for Gaming orders, purchasing USDT via Binance P2P using gaming BaridiMob funds, and filling/depositing wholesale inventory into G2Bulk supplier account.',
         'color': '#7c3aed',
         'is_super': False,
         'app_labels': ['monitoring'],
@@ -50,7 +50,7 @@ INSTITUTIONAL_ROLES = {
         'actions': ['add', 'change', 'view']
     },
     'Withdrawal Operations Officer': {
-        'description': 'Authorized strictly for transferring accumulated collection funds from Collection accounts/wallets into Salah BaridiMob account. Does NOT handle Binance USDT purchases or G2Bulk supplier funding.',
+        'description': 'Authorized strictly for transferring accumulated collection funds from Collection accounts/wallets into gaming BaridiMob account. Does NOT handle Binance USDT purchases or G2Bulk supplier funding.',
         'color': '#ea580c',
         'is_super': False,
         'app_labels': ['monitoring'],

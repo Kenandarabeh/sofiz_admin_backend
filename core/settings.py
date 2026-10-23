@@ -141,7 +141,7 @@ EMAIL_HOST_PASSWORD = _raw_email_pass.replace(' ', '') if _raw_email_pass else '
 DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'eurlsofizpay@gmail.com')
 DEFAULT_ERROR_ALERT_EMAIL = os.getenv('DEFAULT_ERROR_ALERT_EMAIL', 'rabeh2020ken@gmail.com')
 ADMIN_ALERT_EMAILS = [e.strip() for e in os.getenv('ADMIN_ALERT_EMAILS', 'rabeh2020ken@gmail.com,admin@sofizpay.com').split(',') if e.strip()]
-SOUFIANE_NOTIFICATION_EMAIL = os.getenv('SOUFIANE_NOTIFICATION_EMAIL', 'gaming@sofizpay.com')
+track_NOTIFICATION_EMAIL = os.getenv('track_NOTIFICATION_EMAIL', 'gaming@sofizpay.com')
 ADMIN_NOTIFICATION_EMAIL = os.getenv('ADMIN_NOTIFICATION_EMAIL', 'rabeh2020ken@gmail.com')
 
 # Django REST Framework Configuration

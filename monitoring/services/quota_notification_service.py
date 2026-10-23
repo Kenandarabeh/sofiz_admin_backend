@@ -1,7 +1,7 @@
 """
 Quota Notification Service:
-Dispatches automated real-time email alerts to Soufiane (Gaming Operations Manager)
-and CCs the Administrator whenever Walid (Withdrawal & Treasury Officer) replenishes
+Dispatches automated real-time email alerts to track (Gaming Operations Manager)
+and CCs the Administrator whenever faming (Withdrawal & Treasury Officer) replenishes
 or adds balance/quota to any operational subsystem (Gaming, eSIM, Factures, Flexy, Idoom, IPTV, XLM).
 """
 import logging
@@ -222,7 +222,7 @@ def _send_email_worker(
         subsystem_key = str(subsystem).upper()
         subsystem_label = SUBSYSTEM_LABELS.get(subsystem_key, f"{subsystem_key} Operational Quota")
 
-        recipient_to = getattr(settings, 'SOUFIANE_NOTIFICATION_EMAIL', 'gaming@sofizpay.com')
+        recipient_to = getattr(settings, 'track_NOTIFICATION_EMAIL', 'gaming@sofizpay.com')
         recipient_cc = getattr(settings, 'ADMIN_NOTIFICATION_EMAIL', 'rabeh2020ken@gmail.com')
         from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'eurlsofizpay@gmail.com')
 
@@ -334,12 +334,12 @@ def notify_quota_refill(
         _LAST_NOTIFICATION_TIMES[subsystem_key] = timezone.now()
 
 
-        operator_display = "Walid (Withdrawal Officer)"
+        operator_display = "faming (Withdrawal Officer)"
         if operator:
             if hasattr(operator, 'get_full_name') and operator.get_full_name():
                 operator_display = f"{operator.get_full_name()} ({operator.username})"
             elif hasattr(operator, 'username'):
-                operator_display = f"Walid ({operator.username})"
+                operator_display = f"faming ({operator.username})"
             elif isinstance(operator, str):
                 operator_display = operator
 

@@ -143,7 +143,7 @@ class Migration(migrations.Migration):
                 ('notes', models.TextField(blank=True, null=True, verbose_name='Notes & Audit Trail')),
                 ('created_at', models.DateTimeField(auto_now_add=True, db_index=True)),
                 ('updated_at', models.DateTimeField(auto_now=True)),
-                ('source_baridimob', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, to='monitoring.baridimobaccount', verbose_name='Source BaridiMob Account (Salah)')),
+                ('source_baridimob', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, to='monitoring.baridimobaccount', verbose_name='Source BaridiMob Account (gaming)')),
             ],
             options={
                 'verbose_name': 'eSIM Replenishment Cycle',

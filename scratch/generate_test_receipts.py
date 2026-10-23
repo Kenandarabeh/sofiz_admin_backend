@@ -51,20 +51,20 @@ def create_exact_baridimob_pdf(filepath, amount_str, date_str, recipient_rip, ex
 if __name__ == '__main__':
     base_dir = '/home/rabah/Desktop/project3/SofizAdmin/sofizAdmin_fronted/public/test_receipts'
     
-    # 1. Walid Test Receipt (Quota Refill - 50,000.00 DZD)
+    # 1. faming Test Receipt (Quota Refill - 50,000.00 DZD)
     create_exact_baridimob_pdf(
-        os.path.join(base_dir, 'recu_test_walid_quota.pdf'),
+        os.path.join(base_dir, 'recu_test_faming_quota.pdf'),
         amount_str="50000.00",
         date_str="22.10.2026 15:30:00",
         recipient_rip="00799999001738866535",
-        external_id="TEST-WALID-99901"
+        external_id="TEST-faming-99901"
     )
     
-    # 2. Salah Test Receipt (Complete Lifecycle Sweep - 100,000.00 DZD)
+    # 2. gaming Test Receipt (Complete Lifecycle Sweep - 100,000.00 DZD)
     create_exact_baridimob_pdf(
-        os.path.join(base_dir, 'recu_test_salah_sweep.pdf'),
+        os.path.join(base_dir, 'recu_test_gaming_sweep.pdf'),
         amount_str="100000.00",
         date_str="22.10.2026 16:00:00",
         recipient_rip="00799999001738866535",
-        external_id="TEST-SALAH-88801"
+        external_id="TEST-gaming-88801"
     )

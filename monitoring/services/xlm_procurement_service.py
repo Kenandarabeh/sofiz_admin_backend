@@ -61,14 +61,14 @@ class XLMProcurementService:
         vault_dzt_balance = getattr(vault, 'dzt_balance', Decimal('0.0000')) if vault else Decimal('0.0000')
         is_low_xlm_reserve = vault_xlm_balance < MIN_XLM_SAFETY_THRESHOLD
 
-        # 2. Shared BaridiMob Account (Account #3 - Salah Gaming/Shared Account) & 3-Way Quota Split
-        salah_alloc = BalanceEngine.get_salah_baridimob_allocation()
+        # 2. Shared BaridiMob Account (Account #3 - gaming Gaming/Shared Account) & 3-Way Quota Split
+        gaming_alloc = BalanceEngine.get_gaming_baridimob_allocation()
         shared_acc = BaridiMobAccount.objects.filter(rip_number__icontains="001738866535").first()
         if not shared_acc:
-            shared_acc = BaridiMobAccount.objects.filter(account_name__icontains="Salah").first() or BaridiMobAccount.objects.first()
+            shared_acc = BaridiMobAccount.objects.filter(account_name__icontains="gaming").first() or BaridiMobAccount.objects.first()
 
-        eccp_balance = salah_alloc.get('eccp_balance_dzd') or (getattr(shared_acc, 'eccp_balance_dzd', Decimal('0.00')) if shared_acc else Decimal('0.00'))
-        baridimob_balance = salah_alloc.get('baridimob_card_balance_dzd') or (getattr(shared_acc, 'balance_dzd', Decimal('0.00')) if shared_acc else Decimal('0.00'))
+        eccp_balance = gaming_alloc.get('eccp_balance_dzd') or (getattr(shared_acc, 'eccp_balance_dzd', Decimal('0.00')) if shared_acc else Decimal('0.00'))
+        baridimob_balance = gaming_alloc.get('baridimob_card_balance_dzd') or (getattr(shared_acc, 'balance_dzd', Decimal('0.00')) if shared_acc else Decimal('0.00'))
 
         # Quota and active in-transit allocations
         active_gaming_inflows = WithdrawalRecord.objects.filter(
@@ -117,7 +117,7 @@ class XLMProcurementService:
                 'on_chain_verified_at': c.on_chain_verified_at.isoformat() if c.on_chain_verified_at else None,
                 'stellar_ledger_sequence': c.stellar_ledger_sequence,
                 'vault_balance_after_xlm': float(c.vault_balance_after_xlm) if c.vault_balance_after_xlm is not None else None,
-                'executed_by_name': c.executed_by.username if c.executed_by else 'Walid / Treasury',
+                'executed_by_name': c.executed_by.username if c.executed_by else 'faming / Treasury',
                 'notes': c.notes,
                 'created_at': c.created_at.isoformat(),
                 'updated_at': c.updated_at.isoformat(),
@@ -139,20 +139,20 @@ class XLMProcurementService:
         monitoring_settings = MonitoringGlobalSettings.get_settings()
         p2p_rate_val = getattr(monitoring_settings, 'usd_to_dzd_exchange_rate', Decimal('254.00')) or Decimal('254.00')
 
-        walid_wallet = StellarWallet.objects.filter(
+        faming_wallet = StellarWallet.objects.filter(
             models.Q(family=WalletFamily.XLM, role=WalletRole.WITHDRAWAL) |
-            models.Q(name__icontains='Walid')
+            models.Q(name__icontains='faming')
         ).first()
 
         return {
             'success': True,
-            'walid_sourcing_wallet': {
-                'id': walid_wallet.id if walid_wallet else None,
+            'faming_sourcing_wallet': {
+                'id': faming_wallet.id if faming_wallet else None,
                 'name': 'Treasury Withdrawal Sourcing Wallet',
-                'public_address': walid_wallet.public_address if walid_wallet else '',
-                'dzt_balance': float(getattr(walid_wallet, 'dzt_balance', Decimal('0.0000')) or 0.0),
-                'native_xlm_balance': float(getattr(walid_wallet, 'native_xlm_balance', Decimal('0.0000000')) or 0.0),
-            } if walid_wallet else None,
+                'public_address': faming_wallet.public_address if faming_wallet else '',
+                'dzt_balance': float(getattr(faming_wallet, 'dzt_balance', Decimal('0.0000')) or 0.0),
+                'native_xlm_balance': float(getattr(faming_wallet, 'native_xlm_balance', Decimal('0.0000000')) or 0.0),
+            } if faming_wallet else None,
             'vault': {
                 'name': vault.name if vault else 'Big SofizPay Central Treasury Vault',
                 'public_address': vault.public_address if vault else MASTER_VAULT_ADDRESS,
@@ -171,19 +171,19 @@ class XLMProcurementService:
             },
             'shared_postal_account': {
                 'account_name': 'Gaming Operational Account',
-                'rip_number': salah_alloc.get('rip_number') or (shared_acc.rip_number if shared_acc else '00799999001738866535'),
+                'rip_number': gaming_alloc.get('rip_number') or (shared_acc.rip_number if shared_acc else '00799999001738866535'),
                 'eccp_balance_dzd': float(eccp_balance),
                 'baridimob_card_balance_dzd': float(baridimob_balance),
-                'eccp_last_synced_at': salah_alloc.get('eccp_last_synced_at'),
+                'eccp_last_synced_at': gaming_alloc.get('eccp_last_synced_at'),
                 'gaming_transit_dzd': float(gaming_transit_dzd),
                 'esim_transit_dzd': float(esim_transit_dzd),
                 'xlm_transit_dzd': float(xlm_transit_dzd),
-                'salah_allocation': salah_alloc,
-                'gaming_quota': salah_alloc.get('gaming', {}),
-                'esim_quota': salah_alloc.get('esim', {}),
-                'xlm_quota': salah_alloc.get('xlm', {}),
+                'gaming_allocation': gaming_alloc,
+                'gaming_quota': gaming_alloc.get('gaming', {}),
+                'esim_quota': gaming_alloc.get('esim', {}),
+                'xlm_quota': gaming_alloc.get('xlm', {}),
             },
-            'salah_baridimob_allocation': salah_alloc,
+            'gaming_baridimob_allocation': gaming_alloc,
             'stage_counts': stage_counts,
             'total_procured_xlm': float(total_procured_xlm),
             'cycles': cycles_list,
@@ -201,7 +201,7 @@ class XLMProcurementService:
         source_cycle_ids: list = None,
     ) -> dict:
         """
-        Stage 1 Entry: Walid enters the BaridiMob receipt to fund XLM procurement.
+        Stage 1 Entry: faming enters the BaridiMob receipt to fund XLM procurement.
         Creates a new cycle record in STAGE_1_BARIDIMOB.
         Also supports consolidating multiple pending source cycles into a combined cycle.
         """
@@ -259,7 +259,7 @@ class XLMProcurementService:
     ) -> dict:
         """
         Transitions Stage 1 -> Stage 2:
-        Sofiane acquires USDT via Binance/Bybit P2P using Walid's BaridiMob payment.
+        Sofiane acquires USDT via Binance/Bybit P2P using faming's BaridiMob payment.
         """
         cycle = XLMLiquidityFundingRecord.objects.select_for_update().get(id=cycle_id)
         if cycle.stage != XLMFundingStage.STAGE_1_BARIDIMOB:

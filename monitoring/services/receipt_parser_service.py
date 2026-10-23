@@ -258,7 +258,7 @@ class ReceiptParserService:
                 'transaction_id': f"TX-{clean_ref}",
                 'reference_number': clean_ref,
                 'amount_dzd': float(amount_dzd or 50000.0),
-                'account_name': 'Gaming Operational Account (Salah)',
+                'account_name': 'Gaming Operational Account (gaming)',
                 'account_rip': '00799999001738866535',
                 'transaction_date': str(datetime.now().strftime('%Y-%m-%d %H:%M')),
                 'transaction_type': 'Testing Transfer',
@@ -323,7 +323,7 @@ class ReceiptParserService:
         # Build query for active system accounts, optionally filtering by system_type if provided
         q_filter = models.Q(is_active=True)
         if system_type:
-            # Gaming and eSIM share operational BaridiMob postal channels (Salah account)
+            # Gaming and eSIM share operational BaridiMob postal channels (gaming account)
             if system_type in [SubSystemType.ESIM, SubSystemType.GAMING]:
                 q_filter &= (models.Q(system_type=system_type) | models.Q(system_type=SubSystemType.ALL) | models.Q(system_type=SubSystemType.GAMING) | models.Q(system_type=SubSystemType.ESIM))
             else:

@@ -39,7 +39,7 @@ class BaridiMobService:
     @classmethod
     def sync_baridi_balance(cls, account_key: str = None, force_live: bool = False) -> dict:
         """
-        Calls Epay BaridiMob Financial API for 'game' (Salah Gaming Account) or 'facture' (Sihaam Bills).
+        Calls Epay BaridiMob Financial API for 'game' (gaming Gaming Account) or 'facture' (Sihaam Bills).
         Updates BaridiMobAccount in local database with real-time liquid balance.
         Includes fast-path caching (30s) and a cooldown mechanism on scraper failure.
         CRITICAL INSTITUTIONAL RULE: BaridiMob Card balance MUST NEVER be overwritten with ECCP postal balance.
@@ -126,7 +126,7 @@ class BaridiMobService:
                     accounts = data.get("accounts", [])
                     total_balance = Decimal(str(data.get("total_balance_dzd") or data.get("balance_dzd") or "0.00"))
                     if system_type == SubSystemType.GAMING:
-                        account_label = "salahsofi"
+                        account_label = "gamingsofi"
                     else:
                         raw_label = data.get("account_label") or data.get("label")
                         account_label = "Sihaam31" if raw_label == 'facture' else (raw_label or default_label)
@@ -265,13 +265,13 @@ class BaridiMobService:
     def fetch_live_transactions(cls, account_key: str = 'facture', limit: int = 50, fetch_all: bool = True, max_pages: int = 35) -> dict:
         """
         Calls Epay BaridiMob Financial API to fetch real-time raw transaction ledger.
-        Supports 'facture' (Sihaam31) or 'game' (salahsofi).
+        Supports 'facture' (Sihaam31) or 'game' (gamingsofi).
         When fetch_all=True, automatically paginates through all available pages.
         """
         base_url, headers = cls.get_api_auth()
         if account_key == 'game':
             endpoint = f"{base_url}/financial/baridimob/game/transactions/"
-            default_label = "salahsofi"
+            default_label = "gamingsofi"
         else:
             endpoint = f"{base_url}/financial/baridimob/facture/transactions/"
             default_label = "Sihaam31"
@@ -378,7 +378,7 @@ class BaridiMobService:
                 continue
 
             transactions = tx_data.get("transactions", [])
-            label = tx_data.get("account_label") or ("salahsofi" if key == 'game' else "Sihaam31")
+            label = tx_data.get("account_label") or ("gamingsofi" if key == 'game' else "Sihaam31")
 
             # Locate target account
             if not acc:
@@ -527,7 +527,7 @@ class BaridiMobService:
     def sync_eccp_balance(cls, account_key: str = 'game', force_live: bool = False) -> dict:
         """
         Fetches ECCP postal balance from Epay using Extrait de Compte.
-        Supports 'game' (Salah CCP: 0017388665) or 'facture' (Sihaam CCP: 0041665604).
+        Supports 'game' (gaming CCP: 0017388665) or 'facture' (Sihaam CCP: 0041665604).
         Uses fast path or live extrait-de-compte without querying heavy statements.
         Updates BaridiMobAccount with eccp_balance_dzd and eccp_last_synced_at.
         Includes fast 30s cache bypass and fast 1.8s timeout failover.
