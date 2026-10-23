@@ -1804,6 +1804,29 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
                 'error': 'Amount and transaction reference are required to initiate an outflow.'
             }, status=status.HTTP_400_BAD_REQUEST)
 
+        # Combined multi-record consolidation support (e.g. Soufiane combining multiple Walid quotas)
+        raw_source_ids = data.pop('source_record_ids', None) if hasattr(data, 'pop') else data.get('source_record_ids')
+        if not raw_source_ids and request.data.get('source_record_ids'):
+            raw_source_ids = request.data.get('source_record_ids')
+
+        parsed_source_ids = []
+        if raw_source_ids:
+            if isinstance(raw_source_ids, list):
+                parsed_source_ids = [int(x) for x in raw_source_ids if str(x).isdigit()]
+            elif isinstance(raw_source_ids, str):
+                import json
+                try:
+                    loaded = json.loads(raw_source_ids)
+                    if isinstance(loaded, list):
+                        parsed_source_ids = [int(x) for x in loaded if str(x).isdigit()]
+                except Exception:
+                    parsed_source_ids = [int(x.strip()) for x in raw_source_ids.split(',') if x.strip().isdigit()]
+
+        if parsed_source_ids:
+            # When funding supplier from combined pending allocations, mark as completed directly
+            if data.get('withdrawal_type') == WithdrawalType.SUPPLIER_FUNDING or 'Combined' in str(data.get('title', '')):
+                data['stage'] = WithdrawalStage.COMPLETED
+
         now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
         if hasattr(data, 'pop'):
             data.pop('receipt_file', None)
@@ -1817,11 +1840,22 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
                 instance.receipt_file = None
                 instance.save(update_fields=['receipt_file'])
 
+            # Consolidate source records: transition them to COMPLETED so they are cleanly closed
+            if parsed_source_ids:
+                op_name = request.user.username if (request.user and request.user.is_authenticated) else "Operator"
+                sources_qs = WithdrawalRecord.objects.filter(id__in=parsed_source_ids)
+                for src in sources_qs:
+                    src.stage = WithdrawalStage.COMPLETED
+                    audit_msg = f"[Consolidated @ {now_str}] Consumed into Combined Outflow #{instance.id} by {op_name}."
+                    src.notes = (src.notes or '').strip() + f"\n• {audit_msg}"
+                    src.save(update_fields=['stage', 'notes'])
+
             if receipt_id:
                 funding_rec.withdrawal_record = instance
                 funding_rec.save()
                 if funding_rec.stellar_tx_hash and not instance.stellar_tx_hash:
                     instance.stellar_tx_hash = funding_rec.stellar_tx_hash
+
 
             if matched_bm_account and not instance.source_baridimob:
                 instance.source_baridimob = matched_bm_account
@@ -6799,6 +6833,13 @@ class XLMLiquidityStatusAPIView(APIView):
         receipt_reference = request.data.get('receipt_reference')
         receipt_file = request.FILES.get('receipt_file')
         notes = request.data.get('notes', '')
+        source_cycle_ids = request.data.get('source_cycle_ids')
+        if source_cycle_ids and isinstance(source_cycle_ids, str):
+            import json
+            try:
+                source_cycle_ids = json.loads(source_cycle_ids)
+            except Exception:
+                source_cycle_ids = [int(x.strip()) for x in source_cycle_ids.split(',') if x.strip().isdigit()]
 
         try:
             res = XLMProcurementService.initiate_cycle(
@@ -6806,9 +6847,11 @@ class XLMLiquidityStatusAPIView(APIView):
                 receipt_reference=receipt_reference,
                 receipt_file=receipt_file,
                 executed_by=request.user if request.user.is_authenticated else None,
-                notes=notes
+                notes=notes,
+                source_cycle_ids=source_cycle_ids,
             )
             return Response(res, status=status.HTTP_201_CREATED)
+
         except Exception as e:
             return Response({'success': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 

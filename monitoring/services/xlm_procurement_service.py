@@ -197,11 +197,13 @@ class XLMProcurementService:
         receipt_reference: str,
         receipt_file=None,
         executed_by=None,
-        notes: str = ""
+        notes: str = "",
+        source_cycle_ids: list = None,
     ) -> dict:
         """
         Stage 1 Entry: Walid enters the BaridiMob receipt to fund XLM procurement.
         Creates a new cycle record in STAGE_1_BARIDIMOB.
+        Also supports consolidating multiple pending source cycles into a combined cycle.
         """
         amount = Decimal(str(amount_dzd))
         if amount <= Decimal("0.00"):
@@ -232,8 +234,17 @@ class XLMProcurementService:
             notes=notes or f"Initiated BaridiMob outflow of {amount:,.2f} DZD for Stellar XLM procurement.",
         )
 
+        if source_cycle_ids:
+            now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
+            src_cycles = XLMLiquidityFundingRecord.objects.filter(id__in=source_cycle_ids)
+            for sc in src_cycles:
+                sc.stage = XLMFundingStage.STAGE_4_COMPLETED
+                sc.notes = (sc.notes or '').strip() + f"\n• [Consolidated @ {now_str}] Consumed into Combined XLM Procurement Cycle #{cycle.cycle_reference}."
+                sc.save(update_fields=['stage', 'notes'])
+
         logger.info(f"Initiated XLM Liquidity Procurement cycle #{cycle.cycle_reference} for {amount:,.2f} DZD.")
         return {'success': True, 'cycle_id': cycle.id, 'cycle_reference': cycle.cycle_reference}
+
 
     @classmethod
     @transaction.atomic

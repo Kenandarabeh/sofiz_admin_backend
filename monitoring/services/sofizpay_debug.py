@@ -111,11 +111,18 @@ Admin Portal: http://localhost:8383/admin/
 def send_financial_discrepancy_alert(discrepancy: Decimal, audit_data: dict = None) -> bool:
     """
     Sends rich HTML + Text alert when the Golden Balance equation is violated.
+    Throttled to at most once per hour to prevent alert fatigue.
     """
+    cooldown_key = "last_discrepancy_alert"
+    if cache.get(cooldown_key):
+        logger.info("[SofizPay Debug] Skipping financial discrepancy alert (1-hour cooldown active, max once per hour).")
+        return False
+
     recipients = get_alert_recipients()
     subject = f"🚨 URGENT: SofizAdmin Financial Discrepancy Detected ({discrepancy:,.2f} DZT)"
 
     timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+
     
     text_body = f"""
 ============================================================
@@ -159,4 +166,7 @@ Please inspect: http://localhost:8383/admin/
     </div>
     """
 
-    return send_email(recipients, subject, text_body, html_message=html_body)
+    success = send_email(recipients, subject, text_body, html_message=html_body)
+    if success:
+        cache.set(cooldown_key, True, timeout=DEFAULT_ALERT_COOLDOWN_MINUTES * 60)
+    return success

@@ -8,10 +8,16 @@ import logging
 import threading
 from decimal import Decimal
 from django.conf import settings
+from django.core.cache import cache
 from django.core.mail import EmailMultiAlternatives
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
+
+# Strict Cooldown Policy: Maximum 1 alert per hour per subsystem/account (not once every 10 minutes)
+ALERT_COOLDOWN_SECONDS = 3600
+_LAST_NOTIFICATION_TIMES = {}
+
 
 SUBSYSTEM_LABELS = {
     'GAMING': 'Gaming Working Quota (G2Bulk & Cards)',
@@ -269,6 +275,7 @@ def notify_quota_refill(
     reference: str = None,
     notes: str = None,
     async_send: bool = True,
+    force: bool = False,
 ):
     """
     Entry point to trigger quota refill email notification.
@@ -279,6 +286,28 @@ def notify_quota_refill(
         dec_amount = Decimal(str(amount_dzd or 0.00))
         if dec_amount <= Decimal("0.00"):
             return
+
+        subsystem_key = str(subsystem).upper()
+
+        # Strict Rate Limit: Maximum 1 notification per hour per subsystem/account (not once every 10 minutes)
+        if not force:
+            cooldown_key = f"quota_refill_alert_cooldown_{subsystem_key}"
+            if cache.get(cooldown_key):
+                logger.info(
+                    f"[QuotaNotificationService] Alert for {subsystem_key} throttled. "
+                    f"Maximum 1 alert per hour cooldown is active (Redis/Cache lock)."
+                )
+                return
+
+            if subsystem_key in _LAST_NOTIFICATION_TIMES:
+                elapsed = (timezone.now() - _LAST_NOTIFICATION_TIMES[subsystem_key]).total_seconds()
+                if elapsed < ALERT_COOLDOWN_SECONDS:
+                    rem_mins = int((ALERT_COOLDOWN_SECONDS - elapsed) // 60)
+                    logger.info(
+                        f"[QuotaNotificationService] Alert for {subsystem_key} throttled. "
+                        f"Hourly rate limit active: {rem_mins} minutes remaining before next dispatch."
+                    )
+                    return
 
         # Quiet / Stop Window: Suppress alerts during active replenishment grace shield
         try:
@@ -295,6 +324,15 @@ def notify_quota_refill(
                 return
         except Exception as shield_err:
             logger.debug(f"[QuotaNotificationService] Shield check exception: {shield_err}")
+
+        # Update cooldown locks
+        cooldown_key = f"quota_refill_alert_cooldown_{subsystem_key}"
+        try:
+            cache.set(cooldown_key, timezone.now().isoformat(), timeout=ALERT_COOLDOWN_SECONDS)
+        except Exception as cache_err:
+            logger.debug(f"[QuotaNotificationService] Cache set exception: {cache_err}")
+        _LAST_NOTIFICATION_TIMES[subsystem_key] = timezone.now()
+
 
         operator_display = "Walid (Withdrawal Officer)"
         if operator:
