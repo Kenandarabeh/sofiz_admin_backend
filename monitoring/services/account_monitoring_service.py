@@ -168,24 +168,13 @@ class AccountMonitoringService:
         salah_card_sync = salah.last_synced_at if salah else now
         salah_eccp_sync = salah.eccp_last_synced_at if salah else now
 
-        # Post Quotas derived from active postal withdrawals and real account balance
+        # Quotas derived from allocated subsystem requirements via BalanceEngine
         from .balance_engine import BalanceEngine
-        post_quotas = BalanceEngine.get_post_withdrawal_quotas()
-
-        game_target_val = post_quotas['gaming_target_quota']
-        esim_target_val = post_quotas['esim_target_quota']
-        total_target_val = game_target_val + esim_target_val
-
-        if salah_card >= total_target_val:
-            esim_card_quota = esim_target_val
-            game_card_quota = (salah_card - esim_card_quota).quantize(Decimal("0.01"))
-        elif total_target_val > Decimal("0.00"):
-            ratio_g = game_target_val / total_target_val
-            game_card_quota = (salah_card * ratio_g).quantize(Decimal("0.01"))
-            esim_card_quota = (salah_card - game_card_quota).quantize(Decimal("0.01"))
-        else:
-            game_card_quota = salah_card
-            esim_card_quota = Decimal("0.00")
+        alloc = BalanceEngine.get_salah_baridimob_allocation()
+        game_target_val = Decimal(str(alloc['gaming']['expected_balance_dzd']))
+        game_card_quota = Decimal(str(alloc['gaming']['available_balance_dzd']))
+        esim_target_val = Decimal(str(alloc['esim']['expected_balance_dzd']))
+        esim_card_quota = Decimal(str(alloc['esim']['available_balance_dzd']))
 
         game_eccp_quota = game_card_quota
         esim_eccp_quota = esim_card_quota
@@ -405,6 +394,10 @@ class AccountMonitoringService:
         esim_target = float(post_quotas['esim_target_quota'])
         factures_target = float(post_quotas['factures_target_quota'])
 
+        salah_allocation = BalanceEngine.get_salah_baridimob_allocation()
+        gaming_available = float(salah_allocation['gaming']['available_balance_dzd'])
+        esim_available = float(salah_allocation['esim']['available_balance_dzd'])
+
         salah_acc_obj = BaridiMobAccount.objects.filter(id=3).first() or BaridiMobAccount.objects.filter(account_name__icontains='salah').first()
         sihaam_acc_obj = BaridiMobAccount.objects.filter(id=1).first() or BaridiMobAccount.objects.filter(account_name__icontains='sihaam').first()
         salah_solde_val = float(salah_acc_obj.eccp_balance_dzd or salah_acc_obj.balance_dzd or 0) if salah_acc_obj else 0.0
@@ -555,14 +548,12 @@ class AccountMonitoringService:
                 if air_live and air_live.available_balance_usd is not None:
                     cur_bal_native = float(air_live.available_balance_usd)
                     cur_bal_dzd = float(air_live.balance_dzd_equivalent or round(cur_bal_native * rate, 2))
-            elif chan_key in [AccountMonitoringChannel.BARIDIMOB_GAME_QUOTA, AccountMonitoringChannel.BARIDIMOB_ESIM_QUOTA]:
-                if salah_acc_obj and salah_acc_obj.balance_dzd is not None:
-                    cur_bal_native = float(salah_acc_obj.balance_dzd)
-                    cur_bal_dzd = cur_bal_native
-            elif chan_key in [AccountMonitoringChannel.ECCP_GAME_QUOTA, AccountMonitoringChannel.ECCP_ESIM_QUOTA]:
-                if salah_acc_obj and salah_acc_obj.eccp_balance_dzd is not None:
-                    cur_bal_native = float(salah_acc_obj.eccp_balance_dzd)
-                    cur_bal_dzd = cur_bal_native
+            elif chan_key in [AccountMonitoringChannel.BARIDIMOB_GAME_QUOTA, AccountMonitoringChannel.ECCP_GAME_QUOTA]:
+                cur_bal_native = gaming_available
+                cur_bal_dzd = gaming_available
+            elif chan_key in [AccountMonitoringChannel.BARIDIMOB_ESIM_QUOTA, AccountMonitoringChannel.ECCP_ESIM_QUOTA]:
+                cur_bal_native = esim_available
+                cur_bal_dzd = esim_available
             elif chan_key == AccountMonitoringChannel.BARIDIMOB_FACTURE:
                 if sihaam_acc_obj and sihaam_acc_obj.balance_dzd is not None:
                     cur_bal_native = float(sihaam_acc_obj.balance_dzd)
