@@ -1,130 +1,70 @@
 import os
-from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.lib import colors
 
-def create_baridimob_pdf(filepath, amount_str, date_str, recipient_rip, external_id, title_note=""):
+def create_exact_baridimob_pdf(filepath, amount_str, date_str, recipient_rip, external_id):
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    c = canvas.Canvas(filepath, pagesize=A4)
-    width, height = A4
+    # Exact A4 dimensions matching pdf-receipt.pdf: [0, 0, 595, 842]
+    c = canvas.Canvas(filepath, pagesize=(595, 842))
     
-    # Background and Border
-    c.setStrokeColor(colors.HexColor('#003366'))
-    c.setLineWidth(1.5)
-    c.roundRect(40, 160, width - 80, height - 200, 12, stroke=1, fill=0)
+    # 1. Header (Centered, Helvetica 13pt)
+    c.setFont("Helvetica", 13)
+    c.setFillColor(colors.black)
+    c.drawCentredString(595 / 2.0, 724.0, "Algeria Poste")
+    c.drawCentredString(595 / 2.0, 709.0, "Receipt for operation in the system «BaridiMob»")
     
-    # Top Header
-    c.setFont("Helvetica-Bold", 20)
-    c.setFillColor(colors.HexColor('#003366'))
-    c.drawString(60, height - 75, "Algerie Poste")
-    
-    c.setFont("Helvetica", 11)
-    c.setFillColor(colors.HexColor('#555555'))
-    c.drawString(60, height - 95, "Receipt for operation in the system «BaridiMob»")
-    
-    # Decorative line
-    c.setStrokeColor(colors.HexColor('#e2e8f0'))
+    # 2. Horizontal divider line: exactly (36, 690) to (559, 690), line width 1
     c.setLineWidth(1)
-    c.line(60, height - 110, width - 60, height - 110)
+    c.setStrokeColor(colors.black)
+    c.line(36, 690, 559, 690)
     
-    y = height - 145
+    # 3. Two-column key/value table (x=90.3 for label, x=247.2 for value, font 13pt)
+    c.setFont("Helvetica", 13)
     
     # Amount
-    c.setFont("Helvetica-Bold", 12)
-    c.setFillColor(colors.HexColor('#64748b'))
-    c.drawString(60, y, "Amount")
-    y -= 25
-    c.setFont("Helvetica-Bold", 24)
-    c.setFillColor(colors.HexColor('#0f172a'))
-    c.drawString(60, y, f"{amount_str} DZD")
-    y -= 40
+    c.drawString(90.3, 649.0, "Amount")
+    c.drawString(247.2, 649.0, amount_str)
     
-    # Operation Date
-    c.setFont("Helvetica-Bold", 12)
-    c.setFillColor(colors.HexColor('#64748b'))
-    c.drawString(60, y, "Operation date:")
-    y -= 20
-    c.setFont("Helvetica", 12)
-    c.setFillColor(colors.HexColor('#1e293b'))
-    c.drawString(60, y, date_str)
-    y -= 35
+    # Operation date
+    c.drawString(90.3, 625.5, "Operation date:")
+    c.drawString(247.2, 625.5, date_str)
     
     # Recipient
-    c.setFont("Helvetica-Bold", 12)
-    c.setFillColor(colors.HexColor('#64748b'))
-    c.drawString(60, y, "Recipient:")
-    y -= 20
-    c.setFont("Helvetica", 12)
-    c.setFillColor(colors.HexColor('#1e293b'))
-    c.drawString(60, y, recipient_rip)
-    y -= 35
+    c.drawString(90.3, 602.0, "Recipient:")
+    c.drawString(247.2, 602.0, recipient_rip)
     
-    # Operation Type
-    c.setFont("Helvetica-Bold", 12)
-    c.setFillColor(colors.HexColor('#64748b'))
-    c.drawString(60, y, "Operation type:")
-    y -= 20
-    c.setFont("Helvetica", 12)
-    c.setFillColor(colors.HexColor('#1e293b'))
-    c.drawString(60, y, "TRANSFER")
-    y -= 35
+    # Operation type
+    c.drawString(90.3, 578.5, "Operation type:")
+    c.drawString(247.2, 578.5, "TRANSFER")
     
-    # External ID
-    c.setFont("Helvetica-Bold", 12)
-    c.setFillColor(colors.HexColor('#64748b'))
-    c.drawString(60, y, "External id:")
-    y -= 20
-    c.setFont("Helvetica-Bold", 13)
-    c.setFillColor(colors.HexColor('#0284c7'))
-    c.drawString(60, y, external_id)
-    y -= 35
+    # External id
+    c.drawString(90.3, 555.0, "External id:")
+    c.drawString(247.2, 555.0, external_id)
     
-    # Standard Fee
-    c.setFont("Helvetica-Bold", 12)
-    c.setFillColor(colors.HexColor('#64748b'))
-    c.drawString(60, y, "Fee:")
-    y -= 20
-    c.setFont("Helvetica", 12)
-    c.setFillColor(colors.HexColor('#1e293b'))
-    c.drawString(60, y, "50.00 DZD")
-    y -= 45
-    
-    if title_note:
-        c.setFont("Helvetica-Oblique", 10)
-        c.setFillColor(colors.HexColor('#b45309'))
-        c.drawString(60, y, f"Note: {title_note}")
-        y -= 35
-        
-    # Footer
-    c.setFont("Helvetica-Bold", 10)
-    c.setFillColor(colors.HexColor('#003366'))
-    c.drawString(60, 200, "Baridimob")
-    c.setFont("Helvetica", 9)
-    c.setFillColor(colors.HexColor('#64748b'))
-    c.drawString(60, 185, "Quartier des affaires, 16024, Bab Ezzouar, Algeria")
+    # 4. Footer (Centered, Helvetica 13pt)
+    c.drawCentredString(595 / 2.0, 56.0, "Baridimob")
+    c.drawCentredString(595 / 2.0, 36.0, "Quartier des affaires, 16024, Bab Ezzouar, Algeria")
     
     c.save()
-    print(f"Generated test receipt: {filepath}")
+    print(f"Generated exact replica BaridiMob receipt: {filepath}")
 
 if __name__ == '__main__':
     base_dir = '/home/rabah/Desktop/project3/SofizAdmin/sofizAdmin_fronted/public/test_receipts'
     
-    # 1. Walid Test Receipt (Quota Refill)
-    create_baridimob_pdf(
+    # 1. Walid Test Receipt (Quota Refill - 50,000.00 DZD)
+    create_exact_baridimob_pdf(
         os.path.join(base_dir, 'recu_test_walid_quota.pdf'),
         amount_str="50000.00",
         date_str="22.10.2026 15:30:00",
         recipient_rip="00799999001738866535",
-        external_id="TEST-WALID-99901",
-        title_note="Test Quota Refill by Treasury Officer Walid"
+        external_id="TEST-WALID-99901"
     )
     
-    # 2. Salah Test Receipt (Complete Lifecycle Sweep)
-    create_baridimob_pdf(
+    # 2. Salah Test Receipt (Complete Lifecycle Sweep - 100,000.00 DZD)
+    create_exact_baridimob_pdf(
         os.path.join(base_dir, 'recu_test_salah_sweep.pdf'),
         amount_str="100000.00",
         date_str="22.10.2026 16:00:00",
         recipient_rip="00799999001738866535",
-        external_id="TEST-SALAH-88801",
-        title_note="Test Operational Sweep & Withdrawal by Salah Account"
+        external_id="TEST-SALAH-88801"
     )

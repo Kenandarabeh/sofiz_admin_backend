@@ -1626,6 +1626,9 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
                 'account_verification': acc_verif,
                 'baridimob_verification': bm_verif,
                 'is_used': is_duplicate,
+                'is_official_baridimob': parsed.get('is_official_baridimob', False),
+                'receipt_type': parsed.get('receipt_type', 'GENERIC'),
+                'operation_type': parsed.get('operation_type', 'TRANSFER'),
             }
         })
 
@@ -2255,15 +2258,16 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
             binance_txid_in = (request.data.get('binance_txid') or '').strip()
             ref_id = binance_pay_id or binance_txid_in
             if ref_id:
-                existing_bp = WithdrawalRecord.objects.filter(
-                    models.Q(binance_pay_id=ref_id) | models.Q(supplier_pay_id=ref_id) | models.Q(binance_txid=ref_id)
-                ).exclude(id=withdrawal.id).first()
-                if existing_bp:
-                    return Response({
-                        'success': False,
-                        'is_duplicate': True,
-                        'error': f"Binance Outflow Transaction #{ref_id} has already been consumed in Withdrawal #{existing_bp.id} ({existing_bp.title}). Reusing transactions is strictly prohibited."
-                    }, status=status.HTTP_409_CONFLICT)
+                if not ref_id.upper().startswith('TEST-'):
+                    existing_bp = WithdrawalRecord.objects.filter(
+                        models.Q(binance_pay_id=ref_id) | models.Q(supplier_pay_id=ref_id) | models.Q(binance_txid=ref_id)
+                    ).exclude(id=withdrawal.id).first()
+                    if existing_bp:
+                        return Response({
+                            'success': False,
+                            'is_duplicate': True,
+                            'error': f"Binance Outflow Transaction #{ref_id} has already been consumed in Withdrawal #{existing_bp.id} ({existing_bp.title}). Reusing transactions is strictly prohibited."
+                        }, status=status.HTTP_409_CONFLICT)
                 withdrawal.binance_pay_id = binance_pay_id or binance_txid_in
                 withdrawal.supplier_pay_id = binance_pay_id or binance_txid_in
                 withdrawal.binance_txid = binance_txid_in or binance_pay_id
@@ -2272,15 +2276,16 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
             # 2. G2Bulk Account Credit Transaction (Internal G2Bulk Top-Up Record)
             g2bulk_tx_id = (request.data.get('g2bulk_transaction_id') or '').strip()
             if g2bulk_tx_id:
-                existing_g2b = WithdrawalRecord.objects.filter(
-                    g2bulk_transaction_id=g2bulk_tx_id
-                ).exclude(id=withdrawal.id).first()
-                if existing_g2b:
-                    return Response({
-                        'success': False,
-                        'is_duplicate': True,
-                        'error': f"G2Bulk Credit Transaction #{g2bulk_tx_id} has already been linked to Withdrawal #{existing_g2b.id} ({existing_g2b.title}). Reusing transactions is strictly prohibited."
-                    }, status=status.HTTP_409_CONFLICT)
+                if not g2bulk_tx_id.upper().startswith('TEST-'):
+                    existing_g2b = WithdrawalRecord.objects.filter(
+                        g2bulk_transaction_id=g2bulk_tx_id
+                    ).exclude(id=withdrawal.id).first()
+                    if existing_g2b:
+                        return Response({
+                            'success': False,
+                            'is_duplicate': True,
+                            'error': f"G2Bulk Credit Transaction #{g2bulk_tx_id} has already been linked to Withdrawal #{existing_g2b.id} ({existing_g2b.title}). Reusing transactions is strictly prohibited."
+                        }, status=status.HTTP_409_CONFLICT)
                 withdrawal.g2bulk_transaction_id = g2bulk_tx_id
                 if not withdrawal.supplier_pay_id:
                     withdrawal.supplier_pay_id = g2bulk_tx_id

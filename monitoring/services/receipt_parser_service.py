@@ -379,24 +379,63 @@ class ReceiptParserService:
             "fee_dzd": Decimal("50.00"),
             "recipient_rip": None,
             "date_str": None,
+            "operation_type": "TRANSFER",
+            "is_official_baridimob": False,
+            "receipt_type": "GENERIC",
         }
 
         if not text or not text.strip():
             return result
 
-        # 1. Transaction Reference (External ID / Identifiant de transaction / N° de transaction / Référence / رقم المعاملة)
-        ref_match = re.search(
-            r'(?:Identifiant\s*de\s*(?:transa[c]?tion|l[\'’]op[ée]ration)|N[°o]\s*(?:de\s*)?(?:transa[c]?tion|virement|l[\'’]op[ée]ration|recu)|External\s*id|External\s*ID|Transaction\s*ID|Operation\s*ID|R[ée]f[ée]rence|رقم\s*المعاملة|رقم\s*العملية|رقم\s*الحوالة|المرجع)\s*[:：\-]?\s*([A-Za-z0-9\-_]{5,35})',
-            text,
-            re.IGNORECASE
+        # 0. Targeted Official BaridiMob Detector (pdf-receipt.pdf format)
+        is_official = (
+            ("Algeria Poste" in text or "Algérie Poste" in text or "BaridiMob" in text or "«BaridiMob»" in text)
+            and ("External id" in text or "Operation type" in text or "TRANSFER" in text)
         )
-        if ref_match:
-            result["reference"] = ref_match.group(1).strip()
-        else:
-            # Fallback: look for 10-20 digit transaction numbers
-            num_match = re.search(r'\b(202\d{9,16}|\d{10,18})\b', text)
-            if num_match:
-                result["reference"] = num_match.group(1).strip()
+        result["is_official_baridimob"] = is_official
+        result["receipt_type"] = "BARIDIMOB_OFFICIAL_ELECTRONIC" if is_official else "GENERIC"
+
+        # Specialized high-priority extraction matching pdf-receipt.pdf layout
+        # Amount <value> (e.g. "Amount 20000.00")
+        amt_official = re.search(r'(?:^|\n)\s*Amount\s*[:：\-]?\s*([\d\s,\.]+)', text, re.IGNORECASE)
+        if amt_official:
+            parsed_amt = cls._clean_decimal(amt_official.group(1).strip())
+            if parsed_amt and parsed_amt > Decimal("0.00") and parsed_amt != Decimal("50.00"):
+                result["amount_dzd"] = parsed_amt
+
+        # Operation date: <value> (e.g. "Operation date: 24.09.2026 08:57:58")
+        date_official = re.search(r'Operation\s*date\s*[:：\-]?\s*(\d{2}[\/\-\.]\d{2}[\/\-\.]\d{4}(?:\s+\d{2}:\d{2}(?::\d{2})?)?)', text, re.IGNORECASE)
+        if date_official:
+            result["date_str"] = date_official.group(1).strip()
+
+        # Recipient: <value> (e.g. "Recipient: 00799999004166560419")
+        recip_official = re.search(r'Recipient\s*[:：\-]?\s*(007\d{17})', text, re.IGNORECASE)
+        if recip_official:
+            result["recipient_rip"] = recip_official.group(1).strip()
+
+        # Operation type: <value> (e.g. "Operation type: TRANSFER")
+        op_official = re.search(r'Operation\s*type\s*[:：\-]?\s*([A-Za-z_\-]+)', text, re.IGNORECASE)
+        if op_official:
+            result["operation_type"] = op_official.group(1).strip().upper()
+
+        # External id: <value> (e.g. "External id: 012270855185")
+        ext_official = re.search(r'External\s*id\s*[:：\-]?\s*([A-Za-z0-9\-_]{5,35})', text, re.IGNORECASE)
+        if ext_official:
+            result["reference"] = ext_official.group(1).strip()
+
+        # 1. Transaction Reference Fallback (if not captured yet)
+        if not result["reference"]:
+            ref_match = re.search(
+                r'(?:Identifiant\s*de\s*(?:transa[c]?tion|l[\'’]op[ée]ration)|N[°o]\s*(?:de\s*)?(?:transa[c]?tion|virement|l[\'’]op[ée]ration|recu)|External\s*id|External\s*ID|Transaction\s*ID|Operation\s*ID|R[ée]f[ée]rence|رقم\s*المعاملة|رقم\s*العملية|رقم\s*الحوالة|المرجع)\s*[:：\-]?\s*([A-Za-z0-9\-_]{5,35})',
+                text,
+                re.IGNORECASE
+            )
+            if ref_match:
+                result["reference"] = ref_match.group(1).strip()
+            else:
+                num_match = re.search(r'\b(202\d{9,16}|\d{10,18})\b', text)
+                if num_match:
+                    result["reference"] = num_match.group(1).strip()
 
         # 2. Amount in DZD (Amount / Montant / DZD)
         amount_patterns = [
