@@ -2839,6 +2839,63 @@ class LiquidityRetraitRecordViewSet(viewsets.ModelViewSet):
         if matched_bm_account and not data.get('source_baridimob'):
             data['source_baridimob'] = matched_bm_account.id
 
+        # Strict Institutional Policy: Walid cannot inject more than available balance in Games Collection Wallet (Stellar 2)
+        # Live Stellar blockchain sync is performed FIRST to get the real on-chain balance before any cap check.
+        source_wallet = None
+        if data.get('system_type') in [SubSystemType.GAMING, 'GAMING']:
+            source_wallet = (
+                StellarWallet.objects.filter(family=WalletFamily.GAME, role=WalletRole.WITHDRAWAL, is_active=True).first()
+                or StellarWallet.objects.filter(id=2).first()
+            )
+            if source_wallet:
+                data['source_wallet'] = source_wallet.id
+                refill_amt = Decimal(str(data.get('amount_dzd') or 0.00))
+
+                # --- Step 1: Fetch LIVE on-chain balance from Stellar blockchain ---
+                live_sync_error = None
+                try:
+                    logger.info(f"[LiquidityRetrait] Syncing live Stellar balance for wallet '{source_wallet.name}' before cap check...")
+                    StellarService.sync_wallet(source_wallet)
+                    source_wallet.refresh_from_db()
+                    logger.info(f"[LiquidityRetrait] Live Stellar balance for '{source_wallet.name}': {source_wallet.dzt_balance} DZT")
+                except Exception as sync_err:
+                    live_sync_error = str(sync_err)
+                    logger.warning(f"[LiquidityRetrait] Live Stellar sync failed for '{source_wallet.name}': {sync_err}. Falling back to last known DB balance.")
+
+                # --- Step 2: Use live (or last-known) balance for the cap check ---
+                avail_dzt = source_wallet.dzt_balance or Decimal('0.00')
+
+                # Hard block: refill amount cannot exceed real on-chain balance
+                if refill_amt > avail_dzt:
+                    sync_note = " (live on-chain balance)" if not live_sync_error else " (last known DB balance — live sync unavailable)"
+                    return Response({
+                        'success': False,
+                        'stellar_lock': True,
+                        'error': (
+                            f"Stellar Balance Lock: Cannot process {refill_amt:,.2f} DZD refill. "
+                            f"Games Collection Wallet ({source_wallet.name}) holds only "
+                            f"{avail_dzt:,.2f} DZT{sync_note}. "
+                            f"Submission is strictly locked until sufficient on-chain balance is available."
+                        ),
+                        'available_dzt': float(avail_dzt),
+                        'requested_dzd': float(refill_amt),
+                        'wallet_name': source_wallet.name,
+                        'live_sync_error': live_sync_error,
+                    }, status=status.HTTP_400_BAD_REQUEST)
+
+                # Hard block: refuse entirely if wallet has zero balance
+                if avail_dzt <= Decimal('0.00'):
+                    return Response({
+                        'success': False,
+                        'stellar_lock': True,
+                        'error': (
+                            f"Stellar Balance Lock: Games Collection Wallet ({source_wallet.name}) "
+                            f"has zero DZT on-chain. No refill can be processed until the wallet is funded."
+                        ),
+                        'available_dzt': 0.0,
+                        'wallet_name': source_wallet.name,
+                    }, status=status.HTTP_400_BAD_REQUEST)
+
         try:
             with transaction.atomic():
                 serializer = self.get_serializer(data=data)
@@ -2863,14 +2920,36 @@ class LiquidityRetraitRecordViewSet(viewsets.ModelViewSet):
                     except Exception as fee_err:
                         logger.warning(f"Failed to record fee expense for retrait #{retrait.id}: {fee_err}")
 
-                # Optional local balance deduction if DATABASE_ONLY
-                settings_obj = MonitoringGlobalSettings.get_settings()
-                source_wallet = retrait.source_wallet
-                data_mode = getattr(settings_obj, 'master_data_mode', getattr(settings_obj, 'data_source_mode', 'REAL'))
-                if source_wallet and data_mode == 'DATABASE_ONLY':
-                    if source_wallet.dzt_balance is not None and source_wallet.dzt_balance >= retrait.amount_dzd:
-                        source_wallet.dzt_balance -= retrait.amount_dzd
-                        source_wallet.save(update_fields=['dzt_balance'])
+                # 1:1 Mirror Sweep: Deduct DZT from Collection Wallet (Stellar 2) and credit Big SofizPay Central Treasury Vault (Stellar 1)
+                resolved_source = source_wallet or retrait.source_wallet
+                if resolved_source:
+                    big_vault = (
+                        StellarWallet.objects.filter(family=WalletFamily.TREASURY, role=WalletRole.VAULT, is_active=True).first()
+                        or StellarWallet.objects.filter(id=1).first()
+                    )
+
+                    # Deduct from Collection Wallet
+                    resolved_source.dzt_balance = (resolved_source.dzt_balance or Decimal('0.00')) - retrait.amount_dzd
+                    resolved_source.save(update_fields=['dzt_balance', 'updated_at'])
+
+                    # Credit Big SofizPay Central Treasury Vault
+                    if big_vault:
+                        big_vault.dzt_balance = (big_vault.dzt_balance or Decimal('0.00')) + retrait.amount_dzd
+                        big_vault.save(update_fields=['dzt_balance', 'updated_at'])
+
+                    # Record immutable audit trail in WalletSweepLog
+                    from monitoring.models import WalletSweepLog, SweepType, SweepStatus
+                    sweep_log = WalletSweepLog.objects.create(
+                        source_wallet=resolved_source,
+                        destination_wallet=big_vault,
+                        amount_dzt=retrait.amount_dzd,
+                        sweep_type=SweepType.SWEEP_TRANSFER,
+                        status=SweepStatus.SUCCESS,
+                        error_details=f"1:1 Mirror sweep for Quota Refill #{retrait.id} (Reçu #{retrait.reference or 'N/A'}) to Big SofizPay Central Treasury Vault."
+                    )
+                    retrait.source_wallet = resolved_source
+                    retrait.notes = (retrait.notes or '').strip() + f"\n• [Stellar Mirror Sweep] Transferred {retrait.amount_dzd:,.2f} DZT from {resolved_source.name} to {big_vault.name if big_vault else 'Big SofizPay'} (Log #{sweep_log.id})."
+                    retrait.save(update_fields=['source_wallet', 'notes'])
 
                 # Real-time Operational Refill Notification to Manager & Admin
                 if retrait.withdrawal_type == WithdrawalType.LIQUIDITY_REFILL:
@@ -3075,6 +3154,135 @@ class GamingMonitoringAPIView(APIView):
         expected_gaming_baridi = float(gaming_allocation['gaming']['expected_balance_dzd'])
         available_gaming_baridi = float(gaming_allocation['gaming']['available_balance_dzd'])
 
+        # Capital Reconciliation Engine (Strict Separation: Left Holding Accounts vs Right Gaming Capital)
+        right_side_capital = round(gaming_capital, 2)
+        compte_g_dzd = round(available_gaming_baridi, 2)
+
+        collection_wallets_qs = StellarWallet.objects.filter(
+            family=WalletFamily.GAME,
+            role=WalletRole.COLLECTION,
+            is_active=True
+        ).order_by('id')
+        four_wallets_list = [
+            {
+                'id': cw.id,
+                'name': cw.name,
+                'public_address': cw.public_address,
+                'dzt_balance': float(cw.dzt_balance),
+            }
+            for cw in collection_wallets_qs
+        ]
+        four_wallets_total_dzt = round(sum(w['dzt_balance'] for w in four_wallets_list), 2)
+        withdrawal_wallet_dzt = round(float(withdrawal_wallet.dzt_balance), 2) if withdrawal_wallet else 0.0
+
+        left_side_capital_total = round(
+            compte_g_dzd +
+            four_wallets_total_dzt +
+            withdrawal_wallet_dzt +
+            total_g2bulk_dzd +
+            total_binance_dzd,
+            2
+        )
+        capital_discrepancy = round(left_side_capital_total - right_side_capital, 2)
+        is_capital_balanced = abs(capital_discrepancy) <= 1.0
+        capital_status = 'BALANCED' if is_capital_balanced else ('SURPLUS' if capital_discrepancy > 1.0 else 'DEFICIT')
+
+        capital_reconciliation = {
+            'is_balanced': is_capital_balanced,
+            'status': capital_status,
+            'discrepancy_dzd': capital_discrepancy,
+            'right_side': {
+                'total_dzd': right_side_capital,
+                'gaming_capital_dzd': right_side_capital,
+            },
+            'left_side': {
+                'total_dzd': left_side_capital_total,
+                'compte_g_dzd': compte_g_dzd,
+                'four_wallets_total_dzt': four_wallets_total_dzt,
+                'four_wallets': four_wallets_list,
+                'withdrawal_wallet_dzt': withdrawal_wallet_dzt,
+                'withdrawal_wallet': {
+                    'id': withdrawal_wallet.id if withdrawal_wallet else None,
+                    'name': withdrawal_wallet.name if withdrawal_wallet else 'Games Collection & Withdrawal Wallet',
+                    'public_address': withdrawal_wallet.public_address if withdrawal_wallet else '',
+                    'dzt_balance': withdrawal_wallet_dzt,
+                } if withdrawal_wallet else None,
+                'g2bulk_usd': total_g2bulk_usd,
+                'g2bulk_dzd': total_g2bulk_dzd,
+                'binance_usdt': total_binance_usdt,
+                'binance_dzd': total_binance_dzd,
+                'exchange_rate': float(p2p_rate_dec),
+            },
+        }
+
+        # Trigger immediate direct email alert to administrator strictly if capital deficit occurs
+        if capital_discrepancy < -1.0:
+            try:
+                from .services.email_alerts import EmailAlertService
+                EmailAlertService.send_gaming_capital_discrepancy_alert(
+                    discrepancy_dzd=Decimal(str(capital_discrepancy)),
+                    left_side=capital_reconciliation['left_side'],
+                    right_side=capital_reconciliation['right_side']
+                )
+            except Exception as e:
+                logger.error(f"Failed to dispatch gaming capital discrepancy alert: {e}")
+
+        # Profit Reconciliation Engine (Gaming Net Profit vs Total Swept to Profit Vault)
+        from datetime import date
+        from .models import WalletSweepLog
+        from .services.epay_service import EpaySyncService
+        
+        today = date.today()
+        today_str = today.strftime('%Y-%m-%d')
+        today_epay = EpaySyncService.sync_financial_summary(from_date=today_str, to_date=today_str)
+        today_games_profit_dzd = float(today_epay.get('total_profit_dzd', 0.0))
+        today_games_sales_dzd = float(today_epay.get('total_sales_dzd', 0.0))
+        today_games_cost_dzd = float(today_epay.get('total_cost_dzd', 0.0))
+        today_orders_count = int(today_epay.get('total_orders_count', 0))
+
+        # Sweeps executed from GAME collection wallets to profit wallet today
+        profit_sweeps_today = WalletSweepLog.objects.filter(
+            source_wallet__family=WalletFamily.GAME,
+            destination_wallet=profit_wallet,
+            status='SUCCESS',
+            timestamp__date=today
+        )
+        today_swept_profit_dzt = float(profit_sweeps_today.aggregate(total=Sum('amount_dzt'))['total'] or 0.0)
+
+        # All-time sweeps from GAME collection wallets to profit wallet
+        profit_sweeps_all_time = WalletSweepLog.objects.filter(
+            source_wallet__family=WalletFamily.GAME,
+            destination_wallet=profit_wallet,
+            status='SUCCESS'
+        )
+        all_time_swept_profit_dzt = float(profit_sweeps_all_time.aggregate(total=Sum('amount_dzt'))['total'] or 0.0)
+
+        pending_sweep_dzd = max(0.0, round(today_games_profit_dzd - today_swept_profit_dzt, 2))
+        is_fully_swept = today_swept_profit_dzt >= (today_games_profit_dzd - 0.5)
+
+        profit_reconciliation = {
+            'today_games_profit_dzd': round(today_games_profit_dzd, 2),
+            'today_games_sales_dzd': round(today_games_sales_dzd, 2),
+            'today_games_cost_dzd': round(today_games_cost_dzd, 2),
+            'today_orders_count': today_orders_count,
+            'today_swept_profit_dzt': round(today_swept_profit_dzt, 2),
+            'pending_sweep_dzd': pending_sweep_dzd,
+            'is_fully_swept': is_fully_swept,
+            'status': 'SWEPT' if is_fully_swept else 'PENDING',
+            'all_time_swept_profit_dzt': round(all_time_swept_profit_dzt, 2),
+            'breakdown': today_epay.get('breakdown', {}),
+            'recent_sweeps': [
+                {
+                    'id': s.id,
+                    'timestamp': s.timestamp.strftime('%H:%M'),
+                    'source': s.source_wallet.name.replace(' Collection Wallet', '') if s.source_wallet else 'Wallet',
+                    'amount_dzt': float(s.amount_dzt),
+                    'tx_hash': s.stellar_tx_hash[:12] if s.stellar_tx_hash else '',
+                }
+                for s in profit_sweeps_today.order_by('-timestamp')[:5]
+            ]
+        }
+
         eccp_gaming_quota = available_gaming_baridi
         left_side = round(total_g2bulk_dzd + total_binance_dzd + total_in_transit_dzd + total_gaming_dzt + eccp_gaming_quota + gaming_expenses, 2)
         right_side = round(gaming_capital + total_gaming_profit, 2)
@@ -3083,6 +3291,8 @@ class GamingMonitoringAPIView(APIView):
 
         return Response({
             'success': True,
+            'capital_reconciliation': capital_reconciliation,
+            'profit_reconciliation': profit_reconciliation,
             'gaming_baridimob_min_threshold_dzd': float(settings.gaming_baridimob_min_threshold_dzd or 10000.0),
             'gaming_baridimob_allocation': gaming_allocation,
             'operational_account': gaming_allocation.get('operational_account', {}),

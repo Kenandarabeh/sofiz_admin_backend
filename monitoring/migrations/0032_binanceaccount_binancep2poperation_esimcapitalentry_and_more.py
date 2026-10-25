@@ -18,7 +18,7 @@ class Migration(migrations.Migration):
                 ('account_name', models.CharField(default='Official Binance Corporate Account', max_length=150, verbose_name='Account Label')),
                 ('merchant_id', models.CharField(blank=True, max_length=100, null=True, verbose_name='Binance Pay ID / Merchant ID')),
                 ('balance_usdt', models.DecimalField(decimal_places=4, default=Decimal('0.0000'), max_digits=18, verbose_name='Live Balance (USDT)')),
-                ('balance_dzd_equivalent', models.DecimalField(decimal_places=2, default=Decimal('0.00'), max_digits=18, verbose_name='Equivalent in DZT / DZD')),
+                ('balance_dzd_equivalent', models.DecimalField(decimal_places=2, default=Decimal('0.00'), max_digits=18, verbose_name='Equivalent in DZD')),
                 ('is_active', models.BooleanField(db_index=True, default=True, verbose_name='Is Active')),
                 ('last_synced_at', models.DateTimeField(blank=True, null=True, verbose_name='Last Synced At')),
                 ('last_error', models.TextField(blank=True, null=True, verbose_name='Last Sync Error')),

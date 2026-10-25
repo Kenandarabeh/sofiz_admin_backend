@@ -33,15 +33,30 @@ logger = logging.getLogger(__name__)
 
 class StellarSweepService:
 
+    @staticmethod
+    def _match_wallet_game_key(wallet_name: str) -> str:
+        """Helper to match a Stellar operational collection wallet to its ePay game key"""
+        name_l = str(wallet_name).lower()
+        if 'free fire' in name_l or 'freefire' in name_l:
+            return 'freefire'
+        elif 'pubg' in name_l:
+            return 'pubg'
+        elif 'app' in name_l:
+            return 'app'
+        elif 'game' in name_l:
+            return 'game'
+        return 'other'
+
     @classmethod
     def pre_sweep_audit(cls, target_date: date = None, family: str = 'GAME') -> dict:
         """
         Pre-flight audit before midnight sweep:
-        1. Queries Epay API for today's completed sales and net profit (filtered by system).
+        1. Queries Epay API for today's completed sales and net profit (filtered by system and game breakdown).
         2. Syncs and inspects operational collection wallets.
-        3. Validates that Sweep Vault and Profit Vault wallets are configured.
-        4. Validates secret keys (S...).
-        5. Checks for financial discrepancies.
+        3. Calculates precise per-wallet profit allocation and remaining operational capital.
+        4. Validates that Sweep Vault and Profit Vault wallets are configured.
+        5. Validates secret keys (S...).
+        6. Checks for financial discrepancies.
         """
         if target_date is None:
             target_date = timezone.now().date()
@@ -51,15 +66,17 @@ class StellarSweepService:
         warnings = []
         settings = MonitoringGlobalSettings.get_settings()
 
-        # 1. Fetch Today's metrics from Epay API (Focus on GAMING system)
+        # 1. Fetch Today's metrics from Epay API (Focus on GAMING system with game breakdown)
         epay_product = 'gaming' if family == 'GAME' else 'all'
         epay_data = EpaySyncService.sync_financial_summary(product=epay_product, from_date=date_str, to_date=date_str)
         today_profit = Decimal("0.00")
         today_sales = Decimal("0.00")
         today_orders = 0
+        breakdown = {}
 
         if epay_data.get("success"):
             systems = epay_data.get("systems") or epay_data.get("raw", {}).get("systems") or {}
+            breakdown = epay_data.get("breakdown") or {}
             gaming_stats = systems.get("GAMING") if family == 'GAME' else None
             if gaming_stats:
                 today_profit = Decimal(str(gaming_stats.get("net_profit_dzd", 0.0)))
@@ -74,7 +91,6 @@ class StellarSweepService:
             errors.append(err)
             logger.error(err)
 
-        # 2. Check Destination Vault Wallets (Per-Family or Central Vaults)
         # 2. Check Destination Vault Wallets (Per-Family or Central Vaults)
         if family == 'GAME':
             profit_vault = (
@@ -157,11 +173,13 @@ class StellarSweepService:
 
         total_collection_dzt = Decimal("0.0000")
         total_ready_collection_dzt = Decimal("0.0000")
+        total_profit_to_allocate = Decimal("0.0000")
+        total_capital_to_sweep = Decimal("0.0000")
         wallets_audit_info = []
 
         for w in collection_wallets:
             sync_res = StellarService.sync_wallet(w)
-            dzt_bal = w.dzt_balance
+            dzt_bal = w.dzt_balance or Decimal("0.0000")
             total_collection_dzt += dzt_bal
 
             has_secret = bool(w.secret_seed and str(w.secret_seed).strip().startswith('S') and len(str(w.secret_seed).strip()) == 56)
@@ -169,16 +187,52 @@ class StellarSweepService:
             if not has_secret and dzt_bal > 0:
                 warnings.append(f"Wallet '{w.name}' will be swept via Audited Internal Ledger mode (no secret seed configured).")
 
+            # Game breakdown matching & profit/capital calculation for today's operations
+            game_key = cls._match_wallet_game_key(w.name)
+            game_metrics = breakdown.get(game_key, {})
+            game_sales = Decimal(str(game_metrics.get("sales_dzd", 0.0)))
+            game_profit = Decimal(str(game_metrics.get("profit_dzd", 0.0)))
+            game_cost = Decimal(str(game_metrics.get("cost_dzd", 0.0)))
+            if game_cost <= Decimal("0.0000") and game_sales > game_profit:
+                game_cost = game_sales - game_profit
+
+            # Allocate strictly today's profit and today's capital up to the wallet's available balance
+            profit_for_wallet = min(game_profit, dzt_bal).quantize(Decimal("0.0001"))
+            remaining_after_profit = max(Decimal("0.0000"), dzt_bal - profit_for_wallet)
+            capital_for_wallet = min(game_cost, remaining_after_profit).quantize(Decimal("0.0001"))
+
+            total_profit_to_allocate += profit_for_wallet
+            total_capital_to_sweep += capital_for_wallet
+
             w_info = {
                 "id": w.id,
                 "name": w.name,
                 "public_address": w.public_address,
                 "dzt_balance": dzt_bal,
+                "game_key": game_key,
+                "today_sales": game_sales,
+                "epay_game_profit": game_profit,
+                "profit_to_allocate": profit_for_wallet,
+                "capital_to_sweep": capital_for_wallet,
+                "total_today_sweep": profit_for_wallet + capital_for_wallet,
                 "has_secret": has_secret,
                 "mode": "ON_CHAIN" if has_secret else "INTERNAL_LEDGER",
                 "error": sync_res.get("error")
             }
             wallets_audit_info.append(w_info)
+
+        # Fallback allocation for products without game-specific breakdown
+        unallocated_profit = max(Decimal("0.0000"), today_profit - total_profit_to_allocate)
+        if unallocated_profit > Decimal("0.0000"):
+            for w_info in wallets_audit_info:
+                if unallocated_profit <= Decimal("0.0000"):
+                    break
+                rem_bal = max(Decimal("0.0000"), w_info["dzt_balance"] - w_info["profit_to_allocate"] - w_info["capital_to_sweep"])
+                if rem_bal > Decimal("0.0000"):
+                    extra_p = min(unallocated_profit, rem_bal).quantize(Decimal("0.0001"))
+                    w_info["profit_to_allocate"] += extra_p
+                    total_profit_to_allocate += extra_p
+                    unallocated_profit -= extra_p
 
         # 4. Discrepancy Check (Epay vs. Wallets)
         if today_profit > 0 and total_ready_collection_dzt < today_profit:
@@ -211,8 +265,11 @@ class StellarSweepService:
             "today_profit": today_profit,
             "today_sales": today_sales,
             "today_orders": today_orders,
+            "breakdown": breakdown,
             "total_collection_dzt": total_collection_dzt,
             "total_ready_collection_dzt": total_ready_collection_dzt,
+            "total_profit_to_allocate": total_profit_to_allocate,
+            "total_capital_to_sweep": total_capital_to_sweep,
             "sweep_vault": sweep_vault_info,
             "profit_vault": profit_vault_info,
             "sweep_vault_obj": sweep_vault,
@@ -410,6 +467,12 @@ class StellarSweepService:
         # Date string for audit memos
         date_memo_str = str(audit.get('date', timezone.now().date()))
 
+        # Map wallet allocations from pre_sweep_audit
+        wallet_alloc_map = {
+            w_info["id"]: w_info
+            for w_info in audit.get("collection_wallets", [])
+        }
+
         for wallet in collection_wallets:
             if wallet.dzt_balance <= Decimal("0.0000"):
                 continue
@@ -424,13 +487,15 @@ class StellarSweepService:
                 sweep_vault
             )
 
-            # User Testing Mode: Enforce strictly 1.0000 DZT per stage across all sweep transfers
-            # Stage 1: Transfer Profit Allocation (1.0000 DZT) to Family Profit Wallet
-            if family_profit_dest and wallet.dzt_balance >= Decimal("1.0000"):
+            w_alloc = wallet_alloc_map.get(wallet.id, {})
+            profit_amt = w_alloc.get("profit_to_allocate", Decimal("0.0000"))
+
+            # Stage 1: Transfer Exact Calculated Profit Allocation to Family Profit Wallet
+            if family_profit_dest and profit_amt > Decimal("0.0000") and wallet.dzt_balance >= profit_amt:
                 res_profit = StellarService.send_payment(
                     source_wallet=wallet,
                     destination_wallet=family_profit_dest,
-                    amount=Decimal("1.0000"),
+                    amount=profit_amt,
                     memo_text=f"PROFIT-{date_memo_str}"[:28],
                     sweep_type='PROFIT_TRANSFER'
                 )
@@ -439,12 +504,13 @@ class StellarSweepService:
             # Refresh wallet balance from database before Stage 2
             wallet.refresh_from_db()
 
-            # Stage 2: Transfer Operational Sweep (1.0000 DZT) to Family Withdrawal Wallet
-            if family_sweep_dest and wallet.dzt_balance >= Decimal("1.0000"):
+            # Stage 2: Operational Capital Sweep to Family Withdrawal Wallet (strictly today's operational cost)
+            capital_amt = w_alloc.get("capital_to_sweep", Decimal("0.0000"))
+            if family_sweep_dest and capital_amt > Decimal("0.0000") and wallet.dzt_balance >= capital_amt:
                 res_sweep = StellarService.send_payment(
                     source_wallet=wallet,
                     destination_wallet=family_sweep_dest,
-                    amount=Decimal("1.0000"),
+                    amount=capital_amt,
                     memo_text=f"SWEEP-{date_memo_str}"[:28],
                     sweep_type='SWEEP_TRANSFER'
                 )

@@ -236,8 +236,8 @@ class MonitoringGlobalSettings(models.Model):
         help_text="Triggers replenishment alert when Airalo available credit balance drops below this amount."
     )
     
-    total_live_profits_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Live API Profits (DZT / DZD)")
-    total_live_sales_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Live API Sales (DZT / DZD)")
+    total_live_profits_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Live API Profits (DZD)")
+    total_live_sales_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Live API Sales (DZD)")
     total_live_orders_count = models.IntegerField(default=0, verbose_name="Live API Completed Orders")
     g2bulk_min_threshold_usd = models.DecimalField(
         max_digits=15,
@@ -877,7 +877,7 @@ class SupplierAccount(models.Model):
     name = models.CharField(max_length=100, default="Official G2Bulk Account", verbose_name="Account Name")
     api_key = models.CharField(max_length=255, blank=True, null=True, verbose_name="API Key")
     balance_usd = models.DecimalField(max_digits=15, decimal_places=4, default=Decimal("0.0000"), verbose_name="Live Balance (USD $)")
-    balance_dzd_equivalent = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Equivalent in DZT / DZD")
+    balance_dzd_equivalent = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Equivalent in DZD")
     min_balance_threshold_usd = models.DecimalField(
         max_digits=15,
         decimal_places=4,
@@ -1268,7 +1268,7 @@ class BinanceAccount(models.Model):
     account_name = models.CharField(max_length=150, default="Official Binance Corporate Account", verbose_name="Account Label")
     merchant_id = models.CharField(max_length=100, blank=True, null=True, verbose_name="Binance Pay ID / Merchant ID")
     balance_usdt = models.DecimalField(max_digits=18, decimal_places=4, default=Decimal("0.0000"), verbose_name="Live Balance (USDT)")
-    balance_dzd_equivalent = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Equivalent in DZT / DZD")
+    balance_dzd_equivalent = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Equivalent in DZD")
     is_active = models.BooleanField(default=True, db_index=True, verbose_name="Is Active")
     last_synced_at = models.DateTimeField(null=True, blank=True, verbose_name="Last Synced At")
     last_error = models.TextField(null=True, blank=True, verbose_name="Last Sync Error")
@@ -1945,9 +1945,9 @@ class GameProfitRecord(models.Model):
     package_name = models.CharField(max_length=150, blank=True, null=True, verbose_name="Package / Diamond Count")
     player_id = models.CharField(max_length=100, blank=True, null=True, verbose_name="Player ID")
     cost_price_usd = models.DecimalField(max_digits=12, decimal_places=4, default=Decimal("0.0000"), verbose_name="Wholesale Cost Price (USD $)")
-    cost_price_dzd = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal("0.00"), verbose_name="Cost Price (DZT / DZD)")
-    sale_price_dzd = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal("0.00"), verbose_name="Customer Sale Price (DZT / DZD)")
-    net_profit_dzd = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal("0.00"), verbose_name="Net Profit (DZT / DZD)")
+    cost_price_dzd = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal("0.00"), verbose_name="Cost Price (DZD)")
+    sale_price_dzd = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal("0.00"), verbose_name="Customer Sale Price (DZD)")
+    net_profit_dzd = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal("0.00"), verbose_name="Net Profit (DZD)")
     is_delivered = models.BooleanField(default=True, db_index=True, verbose_name="Is Delivered")
     order_date = models.DateTimeField(default=timezone.now, db_index=True, verbose_name="Order Date")
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
@@ -2197,7 +2197,7 @@ class BybitAccount(models.Model):
     user_id = models.CharField(max_length=100, default="477447830", verbose_name="Bybit User ID")
     funding_balance_usdt = models.DecimalField(max_digits=18, decimal_places=4, default=Decimal("0.0000"), verbose_name="Funding Wallet Balance (USDT)")
     unified_balance_usdt = models.DecimalField(max_digits=18, decimal_places=4, default=Decimal("0.0000"), verbose_name="Unified Wallet Balance (USDT)")
-    balance_dzd_equivalent = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Equivalent in DZT / DZD")
+    balance_dzd_equivalent = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Equivalent in DZD")
     is_active = models.BooleanField(default=True, db_index=True, verbose_name="Is Active")
     last_synced_at = models.DateTimeField(null=True, blank=True, verbose_name="Last Synced At")
     last_error = models.TextField(null=True, blank=True, verbose_name="Last Sync Error")

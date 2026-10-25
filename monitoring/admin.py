@@ -758,7 +758,7 @@ class SupplierAccountAdmin(InstitutionalAuditAdminMixin, admin.ModelAdmin):
     def formatted_balance_dzd(self, obj):
         val = obj.balance_dzd_equivalent or Decimal("0.00")
         return format_html('<span style="font-family: monospace; font-weight: bold; color: #0284c7; font-size: 13px;">{} DZT</span>', f"{val:,.2f}")
-    formatted_balance_dzd.short_description = "Equivalent in DZT / DZD"
+    formatted_balance_dzd.short_description = "Equivalent in DZD"
 
     def threshold_status_badge(self, obj):
         threshold = obj.min_balance_threshold_usd or Decimal("500.00")
@@ -1450,7 +1450,7 @@ class BinanceAccountAdmin(InstitutionalAuditAdminMixin, admin.ModelAdmin):
     def formatted_balance_dzd(self, obj):
         val = obj.balance_dzd_equivalent or Decimal("0.00")
         return format_html('<span style="font-family: monospace; font-weight: bold; color: #16a34a; font-size: 14px;">{} DZT</span>', f"{val:,.2f}")
-    formatted_balance_dzd.short_description = "Equivalent in DZT / DZD"
+    formatted_balance_dzd.short_description = "Equivalent in DZD"
 
     @admin.action(description="🔄 Sync Live Binance USDT Balance from Binance API")
     def sync_binance_balance_action(self, request, queryset):
