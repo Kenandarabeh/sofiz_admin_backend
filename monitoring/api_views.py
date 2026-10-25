@@ -2684,9 +2684,27 @@ class LiquidityRetraitRecordViewSet(viewsets.ModelViewSet):
         recipient_rip = parsed.get('recipient_rip')
         fee = parsed.get('fee_dzd')
 
-        # Strict BaridiMob Statement Verification
+        # 1. Strict Recipient Account Verification (Enforce registered system account)
+        if not acc_verif.get('is_registered'):
+            return Response({
+                'success': False,
+                'error': f"Strict Verification Failed: Recipient RIP {recipient_rip or 'N/A'} is not a registered system account. Operational refills must be directed strictly to authorized system accounts.",
+                'account_verified': False,
+                'account_details': acc_verif
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Enforce Gaming subsystem recipient match
+        if system_type == 'GAMING' and acc_verif.get('system_type') not in ['GAMING', 'ALL']:
+            return Response({
+                'success': False,
+                'error': f"Target Account Mismatch: Receipt recipient ({acc_verif.get('account_name')}) is not the Gaming Operational Account. GAMING refills must be sent strictly to Gaming Account (00799999001738866535).",
+                'account_verified': False,
+                'account_details': acc_verif
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # 2. Strict BaridiMob Statement Inflow Verification
         if not bm_verif.get('is_verified'):
-            err_msg = bm_verif.get('message') or f"Strict Verification Failed: Transaction #{ref or 'N/A'} was not found in official BaridiMob account statements."
+            err_msg = bm_verif.get('message') or f"Strict Verification Failed: Transaction #{ref or 'N/A'} was not confirmed as an inflow in official BaridiMob account statements."
             return Response({
                 'success': False,
                 'error': err_msg,
@@ -2761,6 +2779,18 @@ class LiquidityRetraitRecordViewSet(viewsets.ModelViewSet):
                     }, status=status.HTTP_409_CONFLICT)
 
             acc_verif = parsed_receipt.get('account_verification') or {}
+            if not acc_verif.get('is_registered') and not (request.user and request.user.is_superuser):
+                return Response({
+                    'success': False,
+                    'error': f"Unauthorized Recipient: RIP {parsed_receipt.get('recipient_rip') or 'N/A'} is not a registered system account."
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            if data.get('system_type') == 'GAMING' and acc_verif.get('system_type') not in ['GAMING', 'ALL'] and not (request.user and request.user.is_superuser):
+                return Response({
+                    'success': False,
+                    'error': f"Target Mismatch: Receipt recipient ({acc_verif.get('account_name')}) is not the Gaming Operational Account. GAMING refills must be sent strictly to Gaming Account (00799999001738866535)."
+                }, status=status.HTTP_400_BAD_REQUEST)
+
             matched_bm_account = BaridiMobAccount.objects.filter(id=acc_verif.get('account_id')).first() if acc_verif.get('is_registered') else None
 
             bm_statement_verif = parsed_receipt.get('baridimob_statement_verification') or {}

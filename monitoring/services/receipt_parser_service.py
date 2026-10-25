@@ -306,22 +306,41 @@ class ReceiptParserService:
                 'transaction_id': f"TX-{clean_ref or 'TEST-WALID-99901'}",
                 'reference_number': clean_ref or 'TEST-WALID-99901',
                 'amount_dzd': float(amount_dzd or 50000.0),
-                'account_name': 'Gaming Operational Account (gaming)',
+                'account_name': 'Gaming Operational Account (game)',
                 'account_rip': '00799999001738866535',
                 'transaction_date': str(datetime.now().strftime('%Y-%m-%d %H:%M')),
-                'transaction_type': 'Testing Transfer',
-                'message': f"Testing Mode: Official test receipt #{clean_ref or 'TEST-WALID-99901'} pre-approved on ledger."
+                'transaction_type': 'Testing Inflow Transfer',
+                'is_inflow': True,
+                'message': f"Testing Mode: Official test receipt #{clean_ref or 'TEST-WALID-99901'} pre-approved as credited inflow on ledger."
             }
 
         # Query matching transactions by tid, ref_num, or substring in description
+        clean_rip = re.sub(r'\D', '', str(recipient_rip or '')).strip()
         q = Q(tid__iexact=clean_ref) | Q(ref_num__iexact=clean_ref) | Q(description__icontains=clean_ref)
+        if clean_rip:
+            q &= Q(account__rip_number=clean_rip)
+
         tx = BaridiMobTransaction.objects.filter(q).first()
 
         if tx:
-            # Check amount match (within 0.50 DZD tolerance)
+            # 1. Enforce that the transaction is a CREDIT / INFLOW (money entered the account)
+            if tx.amount <= Decimal('0.00'):
+                return {
+                    'is_verified': False,
+                    'status': 'NOT_AN_INFLOW',
+                    'transaction_id': tx.tid,
+                    'statement_amount': float(tx.amount),
+                    'account_name': tx.account.account_name,
+                    'account_rip': tx.account.rip_number,
+                    'transaction_date': str(tx.transaction_date),
+                    'is_inflow': False,
+                    'message': f"Statement Audit Rejected: Transaction #{tx.tid} on {tx.account.account_name} is an outflow / deduction ({float(tx.amount):,.2f} DZD), not a credited inflow to the account."
+                }
+
+            # 2. Check amount match (within 0.50 DZD tolerance)
             if amount_dzd is not None:
                 parsed_amt = Decimal(str(amount_dzd))
-                tx_amt = abs(Decimal(str(tx.amount)))
+                tx_amt = Decimal(str(tx.amount))
                 if abs(parsed_amt - tx_amt) > Decimal('0.50'):
                     return {
                         'is_verified': False,
@@ -332,7 +351,8 @@ class ReceiptParserService:
                         'account_name': tx.account.account_name,
                         'account_rip': tx.account.rip_number,
                         'transaction_date': str(tx.transaction_date),
-                        'message': f"Notice: Transaction #{tx.tid} found in statement, but statement amount ({float(tx_amt):,.2f} DZD) differs from receipt amount ({float(parsed_amt):,.2f} DZD)."
+                        'is_inflow': True,
+                        'message': f"Notice: Transaction #{tx.tid} found in statement, but statement credited inflow ({float(tx_amt):,.2f} DZD) differs from receipt amount ({float(parsed_amt):,.2f} DZD)."
                     }
 
             return {
@@ -340,19 +360,20 @@ class ReceiptParserService:
                 'status': 'VERIFIED_ON_STATEMENT',
                 'transaction_id': tx.tid,
                 'reference_number': tx.ref_num,
-                'amount_dzd': float(abs(tx.amount)),
+                'amount_dzd': float(tx.amount),
                 'account_name': tx.account.account_name,
                 'account_rip': tx.account.rip_number,
                 'transaction_date': str(tx.transaction_date),
                 'transaction_type': tx.transaction_type,
-                'message': f"Confirmed on Ledger: Transaction #{tx.tid} ({float(abs(tx.amount)):,.2f} DZD) verified in official statement for {tx.account.account_name}."
+                'is_inflow': True,
+                'message': f"Confirmed on Ledger: Credited inflow of +{float(tx.amount):,.2f} DZD entered into {tx.account.account_name} (RIP: {tx.account.rip_number})."
             }
 
         return {
             'is_verified': False,
             'status': 'NOT_FOUND_IN_STATEMENT',
             'transaction_id': clean_ref,
-            'message': f"Unverified: Transaction reference #{clean_ref} was not found in the official BaridiMob account statement."
+            'message': f"Unverified: Transaction reference #{clean_ref} was not found in official statement records for account {clean_rip or 'N/A'}."
         }
 
     @classmethod
