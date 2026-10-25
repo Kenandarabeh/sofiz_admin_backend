@@ -2842,6 +2842,21 @@ class LiquidityRetraitRecordViewSet(viewsets.ModelViewSet):
                         source_wallet.dzt_balance -= retrait.amount_dzd
                         source_wallet.save(update_fields=['dzt_balance'])
 
+                # Real-time Operational Refill Notification to Manager & Admin
+                if retrait.withdrawal_type == WithdrawalType.LIQUIDITY_REFILL:
+                    try:
+                        from .services.quota_notification_service import notify_quota_refill
+                        notify_quota_refill(
+                            subsystem=retrait.system_type,
+                            amount_dzd=retrait.amount_dzd,
+                            operator=request.user if (request.user and request.user.is_authenticated) else "Walid (Finance / Treasury Officer)",
+                            reference=retrait.reference or retrait.id,
+                            notes=retrait.notes,
+                            async_send=True,
+                        )
+                    except Exception as mail_err:
+                        logger.error(f"[LiquidityRetraitRecordViewSet] Quota email dispatch failed: {mail_err}")
+
                 headers = self.get_success_headers(serializer.data)
                 return Response({
                     'success': True,
