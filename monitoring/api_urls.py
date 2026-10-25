@@ -18,6 +18,7 @@ from .api_views import (
     UtilityBillRecordViewSet,
     CapitalEntryViewSet,
     WithdrawalRecordViewSet,
+    LiquidityRetraitRecordViewSet,
     BalanceAuditLogViewSet,
     GlobalSettingsAPIView,
     MasterDataModeToggleAPIView,
@@ -71,6 +72,7 @@ router.register(r'game-profits', GameProfitRecordViewSet, basename='game-profits
 router.register(r'utility-bills', UtilityBillRecordViewSet, basename='utility-bills')
 router.register(r'capital-entries', CapitalEntryViewSet, basename='capital-entries')
 router.register(r'withdrawals', WithdrawalRecordViewSet, basename='withdrawals')
+router.register(r'liquidity-retraits', LiquidityRetraitRecordViewSet, basename='liquidity-retraits')
 router.register(r'audit-logs', BalanceAuditLogViewSet, basename='audit-logs')
 router.register(r'bybit-accounts', BybitAccountViewSet, basename='bybit-accounts')
 router.register(r'airalo-accounts', AiraloAccountViewSet, basename='airalo-accounts')
@@ -92,6 +94,8 @@ urlpatterns = [
     path('monitoring/gaming/', GamingMonitoringAPIView.as_view(), name='api-gaming-monitoring'),
     path('monitoring/gaming/gaming-account/', gamingGamingAccountAPIView.as_view(), name='api-gaming-gaming-account'),
     path('monitoring/gaming/gaming-account/sync/', gamingGamingAccountSyncAPIView.as_view(), name='api-gaming-gaming-account-sync'),
+    path('monitoring/gaming/salah-account/', gamingGamingAccountAPIView.as_view(), name='api-gaming-salah-account'),
+    path('monitoring/gaming/salah-account/sync/', gamingGamingAccountSyncAPIView.as_view(), name='api-gaming-salah-account-sync'),
     path('monitoring/utility/', UtilityMonitoringAPIView.as_view(), name='api-utility-monitoring'),
     path('monitoring/utility/sihaam-account/sync/', SihaamUtilityAccountSyncAPIView.as_view(), name='api-sihaam-utility-account-sync'),
     path('monitoring/eccp/sync/', ECCPBalanceSyncAPIView.as_view(), name='api-eccp-sync'),

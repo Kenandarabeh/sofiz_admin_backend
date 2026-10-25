@@ -15,6 +15,7 @@ from .models import (
     BaridiMobTransaction,
     CapitalEntry,
     WithdrawalRecord,
+    LiquidityRetraitRecord,
     BaridiMobFundingReceipt,
     ExpenseRecord,
     GameProfitRecord,
@@ -377,6 +378,52 @@ class WithdrawalRecordSerializer(serializers.ModelSerializer):
             'updated_at',
         ]
         read_only_fields = ['id', 'stage_number', 'next_action', 'receipt_file', 'receipt_file_url', 'created_at', 'updated_at']
+
+
+class LiquidityRetraitRecordSerializer(serializers.ModelSerializer):
+    """
+    Serializer strictly for Pure Liquidity Retrait (Fund Outflows).
+    Isolated from Binance/G2Bulk/Supplier procurement fields.
+    """
+    system_type_display = serializers.CharField(source='get_system_type_display', read_only=True)
+    withdrawal_type_display = serializers.CharField(source='get_withdrawal_type_display', read_only=True)
+    purpose_code_display = serializers.CharField(source='get_purpose_code_display', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    source_wallet_name = serializers.ReadOnlyField(source='source_wallet.name')
+    receipt_file_url = serializers.ReadOnlyField()
+
+    class Meta:
+        model = LiquidityRetraitRecord
+        fields = [
+            'id',
+            'title',
+            'system_type',
+            'system_type_display',
+            'withdrawal_type',
+            'withdrawal_type_display',
+            'purpose_code',
+            'purpose_code_display',
+            'amount_dzd',
+            'withdrawal_date',
+            'status',
+            'status_display',
+            'source_wallet',
+            'source_wallet_name',
+            'source_baridimob',
+            'destination_recipient',
+            'recipient_rip',
+            'receipt_amount_dzd',
+            'receipt_verified',
+            'reference',
+            'file_hash',
+            'receipt_file',
+            'receipt_file_url',
+            'stellar_tx_hash',
+            'notes',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'receipt_file', 'receipt_file_url', 'created_at', 'updated_at']
 
 
 class BaridiMobFundingReceiptSerializer(serializers.ModelSerializer):

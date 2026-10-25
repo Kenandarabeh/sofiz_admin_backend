@@ -28,6 +28,8 @@ from .models import (
     BaridiMobTransaction,
     CapitalEntry,
     WithdrawalRecord,
+    LiquidityRetraitRecord,
+    RetraitStatus,
     BaridiMobFundingReceipt,
     ExpenseRecord,
     GameProfitRecord,
@@ -64,6 +66,7 @@ from .serializers import (
     BaridiMobTransactionSerializer,
     CapitalEntrySerializer,
     WithdrawalRecordSerializer,
+    LiquidityRetraitRecordSerializer,
     BaridiMobFundingReceiptSerializer,
     ReceiptUploadSerializer,
     LinkP2POrderSerializer,
@@ -1607,6 +1610,16 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
         recipient_rip = parsed.get('recipient_rip')
         fee = parsed.get('fee_dzd')
 
+        # 3. Strict Institutional BaridiMob Statement Verification
+        if not bm_verif.get('is_verified'):
+            err_msg = bm_verif.get('message') or f"Strict Verification Failed: Transaction #{ref or 'N/A'} was not found in official BaridiMob account statements. Only statement-verified receipts can be uploaded."
+            return Response({
+                'success': False,
+                'error': err_msg,
+                'statement_verified': False,
+                'statement_details': bm_verif
+            }, status=status.HTTP_400_BAD_REQUEST)
+
         return Response({
             'success': True,
             'is_duplicate': is_duplicate,
@@ -1686,11 +1699,14 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
             # 1. Anti-reuse check
             usage_info = ReceiptParserService.check_receipt_usage(file_hash=file_hash, reference=ref)
             if usage_info.get('is_used'):
-                # For operational refills (LIQUIDITY_REFILL) or eSIM/Gaming refills, append unique suffix to reference
-                is_refill = data.get('withdrawal_type') == WithdrawalType.LIQUIDITY_REFILL or data.get('system_type') == SubSystemType.ESIM
+                # For operational refills/fundings (LIQUIDITY_REFILL, SUPPLIER_FUNDING) or eSIM/Gaming, append unique suffix to reference
+                is_refill = (
+                    data.get('withdrawal_type') in [WithdrawalType.LIQUIDITY_REFILL, WithdrawalType.SUPPLIER_FUNDING]
+                    or data.get('system_type') in [SubSystemType.ESIM, SubSystemType.GAMING]
+                )
                 if is_refill or data.get('allow_duplicate') in [True, 'true', '1'] or (request.user and request.user.is_superuser):
                     if ref:
-                        suffix = "ESIM" if data.get('system_type') == SubSystemType.ESIM else "REFILL"
+                        suffix = "ESIM" if data.get('system_type') == SubSystemType.ESIM else "G2BULK" if data.get('withdrawal_type') == WithdrawalType.SUPPLIER_FUNDING else "REFILL"
                         if not str(ref).endswith(suffix):
                             ref = f"{ref}-{suffix}"
                         data['reference'] = ref
@@ -1711,11 +1727,16 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
             data['stage'] = WithdrawalStage.ALLOCATED
             bm_statement_verif = parsed_receipt.get('baridimob_statement_verification') or {}
             is_stmt_verified = bool(bm_statement_verif.get('is_verified'))
-            data['receipt_verified'] = is_stmt_verified
-            if is_stmt_verified:
-                data['notes'] = (data.get('notes') or '').strip() + f"\n• [BaridiMob Statement] Confirmed on bank statement ({bm_statement_verif.get('account_name')}, #{bm_statement_verif.get('transaction_id')})."
-            else:
-                data['notes'] = (data.get('notes') or '').strip() + f"\n• [Audit Warning] Transaction #{ref} NOT verified in BaridiMob statement records."
+            if not is_stmt_verified:
+                err_msg = bm_statement_verif.get('message') or f"Strict Verification Failed: Transaction #{ref} was not found in official BaridiMob statement records. Operation rejected."
+                return Response({
+                    'success': False,
+                    'error': err_msg,
+                    'statement_details': bm_statement_verif
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            data['receipt_verified'] = True
+            data['notes'] = (data.get('notes') or '').strip() + f"\n• [BaridiMob Statement] Confirmed on bank statement ({bm_statement_verif.get('account_name')}, #{bm_statement_verif.get('transaction_id')})."
 
             data['file_hash'] = file_hash
             if ref:
@@ -1761,7 +1782,20 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
                     'usage_info': usage_info
                 }, status=status.HTTP_409_CONFLICT)
 
-            # Recipient Account Verification (System or External Counterparty)
+            # Recipient Account & Statement Verification
+            stmt_check = ReceiptParserService.verify_against_baridimob_statement(
+                reference=funding_rec.reference,
+                amount_dzd=funding_rec.amount_dzd,
+                recipient_rip=funding_rec.recipient_rip
+            )
+            if not stmt_check.get('is_verified'):
+                err_msg = stmt_check.get('message') or f"Strict Verification Failed: Receipt #{funding_rec.reference} is not verified in official BaridiMob account statements."
+                return Response({
+                    'success': False,
+                    'error': err_msg,
+                    'statement_details': stmt_check
+                }, status=status.HTTP_400_BAD_REQUEST)
+
             acc_verif = ReceiptParserService.verify_recipient_account(
                 recipient_rip=funding_rec.recipient_rip
             )
@@ -1824,6 +1858,21 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
             # When funding supplier from combined pending allocations, mark as completed directly
             if data.get('withdrawal_type') == WithdrawalType.SUPPLIER_FUNDING or 'Combined' in str(data.get('title', '')):
                 data['stage'] = WithdrawalStage.COMPLETED
+
+        # Strict Institutional Balance Constraint: Outflow cannot exceed available operational balance
+        w_type = data.get('withdrawal_type') or WithdrawalType.SUPPLIER_FUNDING
+        sys_type = data.get('system_type')
+        if w_type != WithdrawalType.LIQUIDITY_REFILL and sys_type in [SubSystemType.GAMING, SubSystemType.ESIM, SubSystemType.XLM]:
+            requested_amount = Decimal(str(data.get('amount_dzd') or 0))
+            op_account = BalanceEngine.get_operational_account_balances_db(sys_type)
+            avail_balance = Decimal(str(op_account.get('current_balance_dzd', '0.00')))
+            if requested_amount > avail_balance:
+                return Response({
+                    'success': False,
+                    'error': f'Operational balance insufficient ({avail_balance:,.2f} DZD). Requested dispatch of {requested_amount:,.2f} DZD exceeds available funds. A Liquidity Refill from the Finance Department is strictly required.',
+                    'current_balance_dzd': float(avail_balance),
+                    'requested_amount_dzd': float(requested_amount),
+                }, status=status.HTTP_400_BAD_REQUEST)
 
         now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
         if hasattr(data, 'pop'):
@@ -1897,6 +1946,12 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
 
                 # Check operator role: Dedicated Withdrawal Operations Officer, Treasury Officer, or Superadmin
                 is_game_only_operator = False
+                is_sofiane_req = (
+                    '[SOFIANE_' in str(instance.notes or '')
+                    or request.data.get('is_service_operator') in [True, 'true', '1']
+                    or request.data.get('skip_vault_sweep') in [True, 'true', '1']
+                    or (request.user and getattr(request.user, 'username', '') in ['sofiane', 'game_operator', 'esim_operator', 'facture_operator'])
+                )
                 if self.request.user and self.request.user.is_authenticated:
                     user_groups = set(self.request.user.groups.values_list('name', flat=True))
                     mission_role = getattr(getattr(self.request.user, 'operator_profile', None), 'mission_role', '')
@@ -1911,12 +1966,14 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
                         'Game Family Operator' in user_groups
                         or mission_role in ['GAME_OPERATOR', 'FACTURE_OPERATOR', 'ESIM_OPERATOR']
                     )
-                    if is_game_role and not is_withdrawal_auth:
+                    if (is_game_role and not is_withdrawal_auth) or is_sofiane_req:
                         is_game_only_operator = True
+                elif is_sofiane_req:
+                    is_game_only_operator = True
 
                 if is_game_only_operator:
-                    # Pure Game Operator: Reçu is recorded, but automated wallet balance deduction is restricted to Withdrawal / Treasury Officers
-                    skip_msg = f"[Treasury Notice @ {now_str}] Reçu logged. Automated liquidity deduction omitted (Restricted to Withdrawal Operations Officers)."
+                    # Pure Service Operator (Sofiane): Reçu is recorded, but automated collection-to-vault wallet deduction is omitted
+                    skip_msg = f"[Treasury Notice @ {now_str}] Reçu logged for operational sourcing. Automated collection-to-vault liquidity deduction omitted for service operator."
                     instance.notes = (instance.notes or '').strip() + f"\n• {skip_msg}"
                 elif source_wallet and transfer_amount > Decimal("0.00") and not instance.stellar_tx_hash:
                     # Pure Outflow Withdrawal: The receipt represents money that was already sent outside via BaridiMob.
@@ -1986,19 +2043,20 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
 
                 instance.save()
 
-        # Real-time Quota Refill Notification to track (Gaming Manager) & Admin
-        try:
-            from .services.quota_notification_service import notify_quota_refill
-            notify_quota_refill(
-                subsystem=instance.system_type,
-                amount_dzd=instance.amount_dzd,
-                operator=request.user if (request.user and request.user.is_authenticated) else "faming (Withdrawal Officer)",
-                reference=instance.reference or instance.id,
-                notes=instance.notes,
-                async_send=True,
-            )
-        except Exception as e:
-            logger.error(f"[WithdrawalRecordViewSet] Quota email dispatch failed: {e}")
+        # Real-time Operational Refill Notification (strictly when funds are added by Finance)
+        if instance.withdrawal_type == WithdrawalType.LIQUIDITY_REFILL:
+            try:
+                from .services.quota_notification_service import notify_quota_refill
+                notify_quota_refill(
+                    subsystem=instance.system_type,
+                    amount_dzd=instance.amount_dzd,
+                    operator=request.user if (request.user and request.user.is_authenticated) else "Walid (Finance / Treasury Officer)",
+                    reference=instance.reference or instance.id,
+                    notes=instance.notes,
+                    async_send=True,
+                )
+            except Exception as e:
+                logger.error(f"[WithdrawalRecordViewSet] Quota email dispatch failed: {e}")
 
         headers = self.get_success_headers(serializer.data)
         return Response({
@@ -2562,6 +2620,240 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
         })
 
 
+class LiquidityRetraitRecordViewSet(viewsets.ModelViewSet):
+    """
+    Dedicated Institutional ViewSet for Pure Liquidity Retrait (Fund Outflows).
+    Isolated from Binance/G2Bulk/Supplier procurement workflows.
+    Strictly manages cash extractions, receipt OCR verification, and collection wallet liquidity deduction.
+    """
+    permission_classes = [permissions.AllowAny]
+    queryset = LiquidityRetraitRecord.objects.select_related('source_wallet', 'source_baridimob').all()
+    serializer_class = LiquidityRetraitRecordSerializer
+    parser_classes = [JSONParser, MultiPartParser, FormParser]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        system_type = self.request.query_params.get('system_type')
+        status_param = self.request.query_params.get('status')
+        withdrawal_type = self.request.query_params.get('withdrawal_type')
+        search = self.request.query_params.get('search')
+
+        if system_type:
+            qs = qs.filter(system_type=system_type)
+        if status_param:
+            qs = qs.filter(status=status_param)
+        if withdrawal_type:
+            qs = qs.filter(withdrawal_type=withdrawal_type)
+        if search:
+            qs = qs.filter(
+                Q(title__icontains=search) |
+                Q(reference__icontains=search) |
+                Q(destination_recipient__icontains=search) |
+                Q(recipient_rip__icontains=search)
+            )
+        return qs
+
+    @action(detail=False, methods=['post'], url_path='parse-receipt-upload', parser_classes=[MultiPartParser, FormParser])
+    def parse_receipt_upload(self, request):
+        """
+        Parses an uploaded BaridiMob receipt before creating a retrait record,
+        validating anti-reuse SHA256 file hash, transaction reference,
+        and recipient account whitelisting against system BaridiMobAccount ledger.
+        """
+        receipt_file = request.FILES.get('receipt_file')
+        if not receipt_file:
+            return Response({'success': False, 'error': 'No receipt file provided.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        system_type = request.data.get('system_type') or request.query_params.get('system_type') or 'GAMING'
+
+        try:
+            parsed = ReceiptParserService.parse_receipt(receipt_file, system_type=system_type)
+        except Exception as e:
+            return Response({'success': False, 'error': f"Failed to parse receipt PDF: {e}"}, status=status.HTTP_400_BAD_REQUEST)
+
+        file_hash = parsed.get('file_hash')
+        ref = parsed.get('reference')
+
+        usage_info = ReceiptParserService.check_receipt_usage(file_hash=file_hash, reference=ref)
+        is_duplicate = bool(usage_info.get('is_used'))
+
+        acc_verif = parsed.get('account_verification') or {}
+        bm_verif = parsed.get('baridimob_statement_verification') or {}
+
+        amount = parsed.get('amount_dzd')
+        recipient_rip = parsed.get('recipient_rip')
+        fee = parsed.get('fee_dzd')
+
+        # Strict BaridiMob Statement Verification
+        if not bm_verif.get('is_verified'):
+            err_msg = bm_verif.get('message') or f"Strict Verification Failed: Transaction #{ref or 'N/A'} was not found in official BaridiMob account statements."
+            return Response({
+                'success': False,
+                'error': err_msg,
+                'statement_verified': False,
+                'statement_details': bm_verif
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({
+            'success': True,
+            'is_duplicate': is_duplicate,
+            'duplicate_warning': usage_info.get('reason') if is_duplicate else None,
+            'usage_info': usage_info if is_duplicate else None,
+            'statement_verified': bm_verif.get('is_verified', False),
+            'statement_status': bm_verif.get('status'),
+            'statement_details': bm_verif,
+            'extracted': {
+                'reference': ref,
+                'amount_dzd': float(amount) if amount else None,
+                'recipient_rip': recipient_rip,
+                'fee_dzd': float(fee) if fee else 50.0,
+                'filename': getattr(receipt_file, 'name', 'receipt.pdf'),
+                'file_hash': file_hash,
+                'date_str': parsed.get('date_str'),
+                'account_verification': acc_verif,
+                'baridimob_verification': bm_verif,
+                'is_used': is_duplicate,
+                'is_official_baridimob': parsed.get('is_official_baridimob', False),
+            }
+        })
+
+    def create(self, request, *args, **kwargs):
+        """
+        Record a Pure Liquidity Retrait with atomic balance deduction and receipt attachment.
+        Zero multi-stage procurement: purely records liquidity cash-out.
+        """
+        data = request.data.copy() if hasattr(request.data, 'copy') else dict(request.data)
+        receipt_file = request.FILES.get('receipt_file')
+
+        if not data.get('purpose_code'):
+            data['purpose_code'] = WithdrawalPurpose.TREASURY_ALLOCATION
+        if not data.get('system_type'):
+            data['system_type'] = SubSystemType.GAMING
+        if not data.get('withdrawal_type'):
+            data['withdrawal_type'] = WithdrawalType.LIQUIDITY_REFILL
+
+        parsed_receipt = None
+        matched_bm_account = None
+
+        if receipt_file:
+            try:
+                system_type = data.get('system_type')
+                parsed_receipt = ReceiptParserService.parse_receipt(receipt_file, system_type=system_type)
+            except Exception as e:
+                return Response({'success': False, 'error': f"Failed to parse receipt PDF: {e}"}, status=status.HTTP_400_BAD_REQUEST)
+
+            file_hash = parsed_receipt.get('file_hash')
+            ref = parsed_receipt.get('reference') or data.get('reference')
+
+            usage_info = ReceiptParserService.check_receipt_usage(file_hash=file_hash, reference=ref)
+            if usage_info.get('is_used'):
+                if data.get('allow_duplicate') in [True, 'true', '1'] or (request.user and request.user.is_superuser):
+                    if ref and not str(ref).endswith('RETRAIT'):
+                        ref = f"{ref}-RETRAIT"
+                    data['reference'] = ref
+                    data['notes'] = (data.get('notes') or '').strip() + f"\n• [Audit Warning] Receipt {usage_info.get('reference')} was previously recorded in {usage_info.get('used_in')}."
+                else:
+                    return Response({
+                        'success': False,
+                        'is_duplicate': True,
+                        'error': usage_info.get('reason'),
+                        'usage_info': usage_info
+                    }, status=status.HTTP_409_CONFLICT)
+
+            acc_verif = parsed_receipt.get('account_verification') or {}
+            matched_bm_account = BaridiMobAccount.objects.filter(id=acc_verif.get('account_id')).first() if acc_verif.get('is_registered') else None
+
+            bm_statement_verif = parsed_receipt.get('baridimob_statement_verification') or {}
+            is_stmt_verified = bool(bm_statement_verif.get('is_verified'))
+            data['receipt_verified'] = is_stmt_verified
+            if is_stmt_verified:
+                data['notes'] = (data.get('notes') or '').strip() + f"\n• [BaridiMob Statement] Confirmed on bank statement ({bm_statement_verif.get('account_name')}, #{bm_statement_verif.get('transaction_id')})."
+            else:
+                data['notes'] = (data.get('notes') or '').strip() + f"\n• [Audit Warning] Transaction #{ref} NOT verified in BaridiMob statement records."
+
+            data['file_hash'] = file_hash
+            if ref and not data.get('reference'):
+                data['reference'] = ref
+            if parsed_receipt.get('recipient_rip'):
+                data['recipient_rip'] = parsed_receipt.get('recipient_rip')
+            if parsed_receipt.get('amount_dzd') and Decimal(str(parsed_receipt.get('amount_dzd'))) > 0:
+                data['receipt_amount_dzd'] = parsed_receipt.get('amount_dzd')
+                data['amount_dzd'] = parsed_receipt.get('amount_dzd')
+            elif not data.get('amount_dzd'):
+                return Response({
+                    'success': False,
+                    'error': 'Could not extract transaction amount from receipt. Please enter or verify amount.'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            if not data.get('destination_recipient'):
+                sys_label = (data.get('system_type') or 'Operational').title()
+                if matched_bm_account:
+                    data['destination_recipient'] = f"{matched_bm_account.account_name} ({matched_bm_account.rip_number})"
+                elif parsed_receipt.get('recipient_rip'):
+                    data['destination_recipient'] = f"{sys_label} Operational Account ({parsed_receipt.get('recipient_rip')})"
+                else:
+                    data['destination_recipient'] = f"{sys_label} Operational Account"
+        else:
+            if not data.get('amount_dzd'):
+                return Response({
+                    'success': False,
+                    'error': 'Amount is required to execute a retrait.'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            ref = data.get('reference') or f"RET-{int(timezone.now().timestamp())}"
+            data['reference'] = ref
+            data['receipt_amount_dzd'] = Decimal(str(data.get('amount_dzd')))
+            if not data.get('destination_recipient'):
+                sys_label = (data.get('system_type') or 'Operational').title()
+                data['destination_recipient'] = data.get('recipient_rip') or f"{sys_label} Operational Account"
+
+        if matched_bm_account and not data.get('source_baridimob'):
+            data['source_baridimob'] = matched_bm_account.id
+
+        try:
+            with transaction.atomic():
+                serializer = self.get_serializer(data=data)
+                serializer.is_valid(raise_exception=True)
+                retrait = serializer.save()
+
+                if receipt_file:
+                    retrait.receipt_file = receipt_file
+                    retrait.save(update_fields=['receipt_file'])
+
+                # Log standard 50 DZD transfer fee expense
+                fee_amount = Decimal(str(parsed_receipt.get('fee_dzd', '50.00'))) if parsed_receipt else Decimal('50.00')
+                if fee_amount > 0:
+                    try:
+                        ExpenseRecord.objects.create(
+                            title=f"BaridiMob Retrait Fee - Ref #{retrait.reference or retrait.id}",
+                            category=ExpenseCategory.FEE,
+                            amount_dzd=fee_amount,
+                            system_type=retrait.system_type,
+                            notes=f"Automated fee deduction for Retrait #{retrait.id} ({retrait.amount_dzd} DZD)"
+                        )
+                    except Exception as fee_err:
+                        logger.warning(f"Failed to record fee expense for retrait #{retrait.id}: {fee_err}")
+
+                # Optional local balance deduction if DATABASE_ONLY
+                settings_obj = MonitoringGlobalSettings.get_settings()
+                source_wallet = retrait.source_wallet
+                data_mode = getattr(settings_obj, 'master_data_mode', getattr(settings_obj, 'data_source_mode', 'REAL'))
+                if source_wallet and data_mode == 'DATABASE_ONLY':
+                    if source_wallet.dzt_balance is not None and source_wallet.dzt_balance >= retrait.amount_dzd:
+                        source_wallet.dzt_balance -= retrait.amount_dzd
+                        source_wallet.save(update_fields=['dzt_balance'])
+
+                headers = self.get_success_headers(serializer.data)
+                return Response({
+                    'success': True,
+                    'record': serializer.data,
+                    'message': f"Retrait #{retrait.id} for {retrait.amount_dzd:,.2f} DZD successfully executed."
+                }, status=status.HTTP_201_CREATED, headers=headers)
+
+        except Exception as e:
+            logger.error(f"Error executing liquidity retrait: {e}", exc_info=True)
+            return Response({'success': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
 # ==============================================================================
 # 8. AUDIT LOGS & ENGINE
 # ==============================================================================
@@ -2748,11 +3040,16 @@ class GamingMonitoringAPIView(APIView):
             'success': True,
             'gaming_baridimob_min_threshold_dzd': float(settings.gaming_baridimob_min_threshold_dzd or 10000.0),
             'gaming_baridimob_allocation': gaming_allocation,
+            'operational_account': gaming_allocation.get('operational_account', {}),
+            'operational_accounts': gaming_allocation.get('operational_accounts', {}),
             'quota': {
                 'current_available_dzd': available_gaming_baridi,
                 'expected_balance_dzd': expected_gaming_baridi,
                 'expected_allocation_dzd': expected_gaming_baridi,
                 'min_threshold_dzd': float(settings.gaming_baridimob_min_threshold_dzd or 10000.0),
+                'total_funded_dzd': float(gaming_allocation.get('gaming', {}).get('total_funded_dzd', 0.0)),
+                'total_spent_dzd': float(gaming_allocation.get('gaming', {}).get('total_spent_dzd', 0.0)),
+                'status': gaming_allocation.get('gaming', {}).get('status', 'DEPLETED'),
             },
             'equation': {
                 'is_balanced': is_balanced,
@@ -3512,11 +3809,16 @@ class eSIMMonitoringAPIView(APIView):
             'timestamp': timezone.now().isoformat(),
             'airalo_min_threshold_usd': float(settings.airalo_min_threshold_usd or 100.0),
             'gaming_baridimob_allocation': gaming_allocation,
+            'operational_account': gaming_allocation.get('operational_accounts', {}).get('esim', {}),
+            'operational_accounts': gaming_allocation.get('operational_accounts', {}),
             'quota': {
                 'current_available_dzd': float(gaming_allocation['esim']['available_balance_dzd']),
                 'expected_balance_dzd': float(gaming_allocation['esim']['expected_balance_dzd']),
                 'expected_allocation_dzd': float(gaming_allocation['esim']['expected_balance_dzd']),
                 'min_threshold_dzd': float(settings.gaming_baridimob_min_threshold_dzd or 10000.0),
+                'total_funded_dzd': float(gaming_allocation.get('esim', {}).get('total_funded_dzd', 0.0)),
+                'total_spent_dzd': float(gaming_allocation.get('esim', {}).get('total_spent_dzd', 0.0)),
+                'status': gaming_allocation.get('esim', {}).get('status', 'DEPLETED'),
             },
             'equation': {
                 'is_balanced': audit_res['is_balanced'],
@@ -4071,9 +4373,10 @@ class MasterLiquiditySummaryAPIView(APIView):
                     'linked_route': '/utility',
                 }
             ],
+            'operational_accounts': BalanceEngine.get_operational_account_balances_db(),
             'quotas': {
                 'gaming': {
-                    'title': 'Gaming Working Capital Quota',
+                    'title': 'Gaming Operational Account',
                     'activity': 'Gaming Top-Ups (Free Fire, PUBG & G2Bulk)',
                     'available_quota_dzd': gaming_available,
                     'target_quota_dzd': gaming_target,
@@ -4085,7 +4388,7 @@ class MasterLiquiditySummaryAPIView(APIView):
                     'linked_route': '/gaming',
                 },
                 'esim': {
-                    'title': 'eSIM Working Capital Quota',
+                    'title': 'eSIM Operational Account',
                     'activity': 'eSIM Wholesale & Bybit Visa Sourcing',
                     'available_quota_dzd': esim_available,
                     'target_quota_dzd': esim_target,
@@ -4097,7 +4400,7 @@ class MasterLiquiditySummaryAPIView(APIView):
                     'linked_route': '/withdrawals/esim',
                 },
                 'utility': {
-                    'title': 'Factures & Utility Bills Quota',
+                    'title': 'Factures & Utility Bills Operational Account',
                     'activity': 'Sonelgaz, ADE & Algérie Télécom Settlements',
                     'available_quota_dzd': utility_available,
                     'target_quota_dzd': utility_target,

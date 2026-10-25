@@ -144,6 +144,13 @@ class WithdrawalStage(models.TextChoices):
     CANCELLED = 'CANCELLED', 'Cancelled'
 
 
+class RetraitStatus(models.TextChoices):
+    PENDING = 'PENDING', 'Pending Execution'
+    EXECUTED = 'EXECUTED', 'Executed (Deducted)'
+    RECONCILED = 'RECONCILED', 'Reconciled & Audited'
+    CANCELLED = 'CANCELLED', 'Cancelled'
+
+
 class FundingCycleStatus(models.TextChoices):
     PENDING_P2P = 'PENDING_P2P', 'In Custody / Pending P2P Purchase'
     P2P_COMPLETED = 'P2P_COMPLETED', 'P2P Purchased (Pending G2Bulk Transfer)'
@@ -359,6 +366,10 @@ class MonitoringGlobalSettings(models.Model):
     @property
     def effective_total_capital(self) -> Decimal:
         return (self.effective_gaming_capital + self.effective_utility_capital + self.effective_esim_capital).quantize(Decimal("0.01"))
+
+    @property
+    def master_data_mode(self) -> str:
+        return getattr(self, 'data_source_mode', 'REAL')
 
     @classmethod
     def get_settings(cls):
@@ -1574,6 +1585,113 @@ class WithdrawalRecord(models.Model):
         return f"[{self.get_stage_display()}] {self.title} | -{self.amount_dzd:,.2f} DZT ({self.withdrawal_date})"
 
 
+class LiquidityRetraitRecord(models.Model):
+    """
+    Dedicated Institutional Table for Pure Liquidity Retrait (Fund Outflows).
+    Completely separated from supplier procurement / P2P replenishment pipelines.
+    Focuses strictly on cash extraction, receipt verification, and wallet liquidity deduction.
+    """
+    title = models.CharField(max_length=200, verbose_name="Retrait Purpose / Description")
+    system_type = models.CharField(
+        max_length=30,
+        choices=SubSystemType.choices,
+        default=SubSystemType.GAMING,
+        db_index=True,
+        verbose_name="Sub-System Family"
+    )
+    withdrawal_type = models.CharField(
+        max_length=30,
+        choices=WithdrawalType.choices,
+        default=WithdrawalType.LIQUIDITY_REFILL,
+        db_index=True,
+        verbose_name="Retrait Type"
+    )
+    purpose_code = models.CharField(
+        max_length=50,
+        choices=WithdrawalPurpose.choices,
+        default=WithdrawalPurpose.TREASURY_ALLOCATION,
+        db_index=True,
+        verbose_name="Purpose Code"
+    )
+    amount_dzd = models.DecimalField(max_digits=18, decimal_places=2, verbose_name="Retrait Amount (DZD / DZT)")
+    withdrawal_date = models.DateField(default=timezone.localdate, db_index=True, verbose_name="Retrait Date")
+    status = models.CharField(
+        max_length=30,
+        choices=RetraitStatus.choices,
+        default=RetraitStatus.EXECUTED,
+        db_index=True,
+        verbose_name="Retrait Status"
+    )
+    source_wallet = models.ForeignKey(StellarWallet, on_delete=models.SET_NULL, null=True, blank=True, verbose_name="Debited Source Wallet")
+    source_baridimob = models.ForeignKey(BaridiMobAccount, on_delete=models.SET_NULL, null=True, blank=True, verbose_name="Source BaridiMob Account")
+    destination_recipient = models.CharField(max_length=150, blank=True, null=True, verbose_name="Recipient Account / Counterparty")
+    recipient_rip = models.CharField(max_length=50, blank=True, null=True, verbose_name="Recipient RIP")
+    receipt_amount_dzd = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True, verbose_name="Receipt Amount (DZD)")
+    receipt_verified = models.BooleanField(default=False, verbose_name="Receipt Statement Verified")
+    reference = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="Transaction Reference / Reçu Ref")
+    file_hash = models.CharField(max_length=64, null=True, blank=True, db_index=True, verbose_name="Receipt SHA256 Hash")
+    receipt_file = models.FileField(upload_to='retrait_receipts/%Y/%m/', null=True, blank=True, verbose_name="BaridiMob Receipt PDF")
+    stellar_tx_hash = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="Stellar Outflow TX Hash")
+    notes = models.TextField(blank=True, null=True, verbose_name="Audit Notes & Details")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Liquidity Retrait Record"
+        verbose_name_plural = "Liquidity Retrait Records"
+        ordering = ['-withdrawal_date', '-created_at']
+        indexes = [
+            models.Index(fields=['system_type', 'withdrawal_type'], name='idx_retrait_sys_type'),
+            models.Index(fields=['purpose_code'], name='idx_retrait_purpose'),
+            models.Index(fields=['status'], name='idx_retrait_status'),
+            models.Index(fields=['withdrawal_date'], name='idx_retrait_date'),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(amount_dzd__gte=Decimal("0.00")),
+                name='check_retrait_amount_positive'
+            )
+        ]
+
+    def save(self, *args, **kwargs):
+        if not self.source_wallet or self.source_wallet.category in [WalletCategory.TREASURY, WalletCategory.SWEEP_VAULT, WalletCategory.PROFIT_VAULT]:
+            settings = MonitoringGlobalSettings.get_settings()
+            if self.system_type == SubSystemType.UTILITY:
+                self.source_wallet = (
+                    StellarWallet.objects.filter(role=WalletRole.WITHDRAWAL, family=WalletFamily.FACTURE, is_active=True).first()
+                    or StellarWallet.objects.filter(role=WalletRole.WITHDRAWAL, category=WalletCategory.UTILITY, is_active=True).first()
+                    or StellarWallet.objects.filter(category=WalletCategory.UTILITY, is_active=True).first()
+                )
+            elif self.system_type == SubSystemType.ESIM:
+                self.source_wallet = (
+                    StellarWallet.objects.filter(role=WalletRole.WITHDRAWAL, family=WalletFamily.ESIM, is_active=True).first()
+                    or StellarWallet.objects.filter(family=WalletFamily.ESIM, role=WalletRole.COLLECTION, is_active=True).first()
+                    or StellarWallet.objects.filter(family=WalletFamily.ESIM, is_active=True).first()
+                )
+            else:  # GAMING
+                self.source_wallet = (
+                    settings.games_collection_wallet
+                    or StellarWallet.objects.filter(role=WalletRole.WITHDRAWAL, family=WalletFamily.GAME, is_active=True).first()
+                    or StellarWallet.objects.filter(role=WalletRole.WITHDRAWAL, category=WalletCategory.GAMING, is_active=True).first()
+                    or StellarWallet.objects.filter(category=WalletCategory.GAMING, is_active=True).first()
+                )
+        if not self.title and self.purpose_code:
+            self.title = self.get_purpose_code_display()
+        super().save(*args, **kwargs)
+
+    @property
+    def receipt_file_url(self):
+        if self.receipt_file and hasattr(self.receipt_file, 'url'):
+            try:
+                return self.receipt_file.url
+            except Exception:
+                pass
+        return None
+
+    def __str__(self):
+        return f"[Retrait: {self.get_status_display()}] {self.title} | -{self.amount_dzd:,.2f} DZT ({self.withdrawal_date})"
+
+
 class GamingWithdrawalManager(models.Manager):
     def get_queryset(self):
         return super().get_queryset().filter(system_type=SubSystemType.GAMING)
@@ -1638,9 +1756,6 @@ class BinanceP2POperation(WithdrawalRecord):
         verbose_name_plural = "Binance P2P & Crypto Operations"
 
 
-# ==============================================================================
-# 5. AUTOMATED 4-STAGE FUNDING CYCLE (BARIDIMOB -> P2P -> G2BULK)
-# ==============================================================================
 
 class BaridiMobFundingReceipt(models.Model):
     """
@@ -1746,10 +1861,6 @@ class BaridiMobFundingReceipt(models.Model):
         return f"Receipt #{ref} | {amt:,.2f} DZD -> {self.responsible_person} ({self.get_status_display()})"
 
 
-# ==============================================================================
-# 6. OPERATIONAL EXPENSES & FEES
-# ==============================================================================
-
 class ExpenseRecord(models.Model):
     """Operational expenses, blockchain transaction gas, and BaridiMob fee records"""
     title = models.CharField(max_length=200, verbose_name="Expense Title")
@@ -1826,10 +1937,6 @@ class UtilityExpenseRecord(ExpenseRecord):
         verbose_name_plural = "Utility Bills Operational Expenses & Fees"
 
 
-# ==============================================================================
-# 7. SALES PROFITS & UTILITY BILL COMMISSIONS
-# ==============================================================================
-
 class GameProfitRecord(models.Model):
     """Gaming Top-up sales profits from G2Bulk & Cha7n orders"""
     order_reference = models.CharField(max_length=100, unique=True, db_index=True, verbose_name="Order Reference (UID)")
@@ -1896,10 +2003,6 @@ class UtilityBillRecord(models.Model):
         return f"[{self.get_service_display()}] {self.bill_reference} | {self.bill_amount_dzd:,.2f} DZD"
 
 
-# ==============================================================================
-# 8. FINANCIAL RECONCILIATION & GOLDEN BALANCE AUDIT
-# ==============================================================================
-
 class BalanceAuditLog(models.Model):
     """
     Real-time financial audit snapshots and Golden Balance Equation verification:
@@ -1945,10 +2048,6 @@ class BalanceAuditLog(models.Model):
         return f"Audit {self.checked_at.strftime('%Y-%m-%d %H:%M')} | {self.status} (Discrepancy: {self.discrepancy_dzd:,.2f} DZT)"
 
 
-# ==============================================================================
-# 9. AUTHENTICATION & ACCESS AUDIT TRAIL
-# ==============================================================================
-
 class LoginAuditLog(models.Model):
     """Institutional audit log of authentication attempts, IP addresses, and security outcomes"""
     username = models.CharField(max_length=150, db_index=True, verbose_name="Username or Email")
@@ -1972,10 +2071,6 @@ class LoginAuditLog(models.Model):
         status_label = "SUCCESS" if self.is_success else f"FAILED ({self.failure_reason})"
         return f"Login [{status_label}] - {self.username} from {self.ip_address} at {self.timestamp.strftime('%Y-%m-%d %H:%M:%S')}"
 
-
-# ==============================================================================
-# 10. EMPLOYEES & OPERATORS (BY MISSION & ROLE)
-# ==============================================================================
 
 class OperatorMissionRole(models.TextChoices):
     GAME_OPERATOR = 'GAME_OPERATOR', '🎮 Game Family Operator (Free Fire, PUBG, G2Bulk)'
@@ -2095,9 +2190,6 @@ class OperatorActionLog(models.Model):
         return f"[{self.action_type}] {self.operator_username} on {self.target_model} ({self.object_repr})"
 
 
-# ==============================================================================
-# 11. DEDICATED eSIM MULTI-TENANT ISOLATED INFRASTRUCTURE (Bybit & Airalo)
-# ==============================================================================
 
 class BybitAccount(models.Model):
     """Dedicated Bybit Crypto Funding Account for eSIM Visa Card Allocation"""
@@ -2329,10 +2421,6 @@ class AccountBalanceSnapshot(models.Model):
         return f"[{self.get_channel_display()}] {self.recorded_at.strftime('%Y-%m-%d %H:%M')} | {self.current_balance_dzd:,.2f} DZD (Change: {self.balance_change_dzd:+,.2f} DZD)"
 
 
-# ==============================================================================
-# 11. IDOOM BATCH REFILL & REFUND MODELS
-# ==============================================================================
-
 class IdoomBatchRefill(models.Model):
     """
     Audited record for Idoom card stock replenishment batches uploaded by Treasury Officer (faming).
@@ -2381,9 +2469,6 @@ class IdoomRefundRecord(models.Model):
         return f"[Idoom Refund #{self.refund_reference}] TID: {self.epay_transaction_id} | Amount: {self.denomination_dzd:,.2f} DZD"
 
 
-# ==============================================================================
-# 12. IPTV BATCH REFILL & REFUND MODELS
-# ==============================================================================
 
 class IPTVBatchRefill(models.Model):
     """
@@ -2432,10 +2517,6 @@ class IPTVRefundRecord(models.Model):
     def __str__(self):
         return f"[IPTV Refund #{self.refund_reference}] TID: {self.epay_transaction_id} | Amount: {self.denomination_dzd:,.2f} DZD"
 
-
-# ==============================================================================
-# 13. FLEXY TELECOM SUBSYSTEM (MOBILIS, DJEZZY, OOREDOO) MODELS
-# ==============================================================================
 
 class FlexyFundingTranche(models.Model):
     """
