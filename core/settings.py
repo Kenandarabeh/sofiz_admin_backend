@@ -128,9 +128,9 @@ CSRF_TRUSTED_ORIGINS = [
 
 FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5172')
 
-# Email Configuration - Enabled for Operational Quota Refill Alerts & System Notifications
-EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.smtp.EmailBackend')
-EMAIL_ALERTS_ENABLED = True
+# Email Configuration - Fully disabled per user instruction
+EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.dummy.EmailBackend')
+EMAIL_ALERTS_ENABLED = False
 EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
 EMAIL_PORT = int(os.getenv('EMAIL_PORT', 587))
 EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'True') == 'True'

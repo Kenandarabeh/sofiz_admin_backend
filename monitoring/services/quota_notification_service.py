@@ -283,6 +283,9 @@ def notify_quota_refill(
     Dispatches asynchronously in a daemon thread so API responses are immediate.
     """
     try:
+        if not getattr(settings, 'EMAIL_ALERTS_ENABLED', False):
+            return
+
         dec_amount = Decimal(str(amount_dzd or 0.00))
         if dec_amount <= Decimal("0.00"):
             return
