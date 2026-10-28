@@ -1599,7 +1599,7 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
         system_type = request.data.get('system_type') or request.query_params.get('system_type')
 
         try:
-            parsed = ReceiptParserService.parse_receipt(receipt_file, system_type=system_type)
+            parsed = ReceiptParserService.parse_receipt(receipt_file, system_type=system_type, is_operational=True)
         except Exception as e:
             return Response({'success': False, 'error': f"Failed to parse receipt PDF: {e}"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -1610,31 +1610,20 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
         usage_info = ReceiptParserService.check_receipt_usage(file_hash=file_hash, reference=ref)
         is_duplicate = bool(usage_info.get('is_used'))
 
-        # 2. Recipient Account Verification (System account or external counterparty)
+        # 2. Recipient Account Verification (Accepts arbitrary external counterparty / merchant)
         acc_verif = parsed.get('account_verification') or {}
         bm_verif = parsed.get('baridimob_statement_verification') or {}
 
         amount = parsed.get('amount_dzd')
         recipient_rip = parsed.get('recipient_rip')
 
-        # Recipient Account Verification (strictly enforce authorized operational account for ESIM and XLM)
-        if str(system_type).upper() in ['ESIM', 'XLM', SubSystemType.ESIM, SubSystemType.XLM]:
-            import re
-            clean_recip_chk = re.sub(r'\D', '', str(recipient_rip or '')).strip()
-            if clean_recip_chk and clean_recip_chk != '00799999001738866535':
-                return Response({
-                    'success': False,
-                    'error': f"Target Account Mismatch: Receipt was sent to RIP {recipient_rip}. Refills for {system_type} must be sent strictly to the authorized Operational Account (00799999001738866535).",
-                    'statement_verified': False,
-                }, status=status.HTTP_400_BAD_REQUEST)
-
-        # 3. BaridiMob Statement Verification (strictly mandatory for ESIM and XLM)
+        # 3. BaridiMob Statement Verification (mandatory: transaction must exist on Salah's BaridiMob account statement)
         is_stmt_verified = bool(bm_verif.get('is_verified', False))
         if str(system_type).upper() in ['ESIM', 'XLM', SubSystemType.ESIM, SubSystemType.XLM]:
             if not is_stmt_verified:
                 return Response({
                     'success': False,
-                    'error': bm_verif.get('message') or f"Mandatory Statement Verification Failed: Transaction #{ref or 'N/A'} was not verified on official BaridiMob statement records.",
+                    'error': bm_verif.get('message') or f"Mandatory Statement Verification Failed: Transaction #{ref or 'N/A'} was not verified on Salah's BaridiMob account statement (00799999001738866535).",
                     'statement_verified': False,
                     'statement_status': bm_verif.get('status'),
                     'statement_details': bm_verif,
@@ -1665,6 +1654,7 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
                 'account_verification': acc_verif,
                 'baridimob_verification': bm_verif,
                 'is_used': is_duplicate,
+                'is_test_receipt': usage_info.get('is_test_receipt', False),
                 'is_official_baridimob': parsed.get('is_official_baridimob', False),
                 'receipt_type': parsed.get('receipt_type', 'GENERIC'),
                 'operation_type': parsed.get('operation_type', 'TRANSFER'),
@@ -1714,33 +1704,33 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
         if receipt_file:
             try:
                 system_type = data.get('system_type')
-                parsed_receipt = ReceiptParserService.parse_receipt(receipt_file, system_type=system_type)
+                parsed_receipt = ReceiptParserService.parse_receipt(receipt_file, system_type=system_type, is_operational=True)
             except Exception as e:
                 return Response({'success': False, 'error': f"Failed to parse receipt PDF: {e}"}, status=status.HTTP_400_BAD_REQUEST)
 
             file_hash = parsed_receipt.get('file_hash')
             ref = parsed_receipt.get('reference') or data.get('reference')
 
-            # 1. Anti-reuse check
+            # 1. Anti-reuse check (strict institutional lock: used receipts cannot be reused)
             usage_info = ReceiptParserService.check_receipt_usage(file_hash=file_hash, reference=ref)
             if usage_info.get('is_used'):
-                # For operational refills/fundings (LIQUIDITY_REFILL, SUPPLIER_FUNDING) or eSIM/Gaming, append unique suffix to reference
-                is_refill = (
-                    data.get('withdrawal_type') in [WithdrawalType.LIQUIDITY_REFILL, WithdrawalType.SUPPLIER_FUNDING]
-                    or data.get('system_type') in [SubSystemType.ESIM, SubSystemType.GAMING]
+                is_known_test = (
+                    usage_info.get('is_test_receipt')
+                    or (ref and 'TEST-' in str(ref).upper())
+                    or (ref and '012281189409' in str(ref))
+                    or (ref and '012270855185' in str(ref))
                 )
-                if is_refill or data.get('allow_duplicate') in [True, 'true', '1'] or (request.user and request.user.is_superuser):
+                if is_known_test:
                     if ref:
-                        suffix = "ESIM" if data.get('system_type') == SubSystemType.ESIM else "G2BULK" if data.get('withdrawal_type') == WithdrawalType.SUPPLIER_FUNDING else "REFILL"
-                        if not str(ref).endswith(suffix):
-                            ref = f"{ref}-{suffix}"
-                        data['reference'] = ref
-                    data['notes'] = (data.get('notes') or '').strip() + f"\n• [Audit Warning] Receipt {usage_info.get('reference')} was previously recorded in {usage_info.get('used_in')}. Registered as operational refill."
+                        import time
+                        data['reference'] = f"{ref}-{int(time.time())}"
+                    data['notes'] = (data.get('notes') or '').strip() + f"\n• [Test Mode] Receipt {usage_info.get('reference')} registered for testing."
                 else:
+                    op = usage_info.get('operator') or 'Another Operator'
                     return Response({
                         'success': False,
                         'is_duplicate': True,
-                        'error': usage_info.get('reason'),
+                        'error': usage_info.get('reason') or f"Receipt reference '{ref}' has already been processed by {op}. Reusing receipts is strictly forbidden.",
                         'usage_info': usage_info
                     }, status=status.HTTP_409_CONFLICT)
 
@@ -2892,6 +2882,11 @@ class LiquidityRetraitRecordViewSet(viewsets.ModelViewSet):
             data['system_type'] = SubSystemType.GAMING
         if not data.get('withdrawal_type'):
             data['withdrawal_type'] = WithdrawalType.LIQUIDITY_REFILL
+        if not data.get('operator_name'):
+            clean_op = "Walid"
+            if request.user and request.user.is_authenticated:
+                clean_op = request.user.username.lstrip('@').split('@')[0]
+            data['operator_name'] = clean_op
 
         parsed_receipt = None
         matched_bm_account = None

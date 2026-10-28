@@ -1650,6 +1650,7 @@ class LiquidityRetraitRecord(models.Model):
     file_hash = models.CharField(max_length=64, null=True, blank=True, db_index=True, verbose_name="Receipt SHA256 Hash")
     receipt_file = models.FileField(upload_to='retrait_receipts/%Y/%m/', null=True, blank=True, verbose_name="BaridiMob Receipt PDF")
     stellar_tx_hash = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="Stellar Outflow TX Hash")
+    operator_name = models.CharField(max_length=150, blank=True, null=True, db_index=True, verbose_name="Operating Officer / Executed By")
     notes = models.TextField(blank=True, null=True, verbose_name="Audit Notes & Details")
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)

@@ -423,6 +423,7 @@ class LiquidityRetraitRecordSerializer(serializers.ModelSerializer):
             'receipt_file',
             'receipt_file_url',
             'stellar_tx_hash',
+            'operator_name',
             'notes',
             'created_at',
             'updated_at',
