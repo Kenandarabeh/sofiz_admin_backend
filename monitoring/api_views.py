@@ -2829,6 +2829,13 @@ class LiquidityRetraitRecordViewSet(viewsets.ModelViewSet):
                 'account_verified': False,
                 'account_details': acc_verif
             }, status=status.HTTP_400_BAD_REQUEST)
+        elif system_type in ['XLM', SubSystemType.XLM] and acc_verif.get('system_type') not in ['XLM', 'GAMING', 'ALL'] and str(recipient_rip or '').strip() != '00799999001738866535':
+            return Response({
+                'success': False,
+                'error': f"Target Account Mismatch: Receipt recipient ({acc_verif.get('account_name')}) is not an authorized XLM Operational Account. XLM refills must be sent strictly to authorized accounts (00799999001738866535).",
+                'account_verified': False,
+                'account_details': acc_verif
+            }, status=status.HTTP_400_BAD_REQUEST)
 
         # 2. BaridiMob Statement Verification (Strictly mandatory for ESIM and XLM)
         is_stmt_verified = bool(bm_verif.get('is_verified', False))
@@ -2930,6 +2937,11 @@ class LiquidityRetraitRecordViewSet(viewsets.ModelViewSet):
                 return Response({
                     'success': False,
                     'error': f"Target Mismatch: Receipt recipient ({acc_verif.get('account_name')}) is not an authorized eSIM Operational Account. eSIM refills must be sent strictly to authorized accounts (00799999001738866535).",
+                }, status=status.HTTP_400_BAD_REQUEST)
+            elif data.get('system_type') in ['XLM', SubSystemType.XLM] and acc_verif.get('system_type') not in ['XLM', 'GAMING', 'ALL'] and str(parsed_receipt.get('recipient_rip') or '').strip() != '00799999001738866535' and not (request.user and request.user.is_superuser):
+                return Response({
+                    'success': False,
+                    'error': f"Target Mismatch: Receipt recipient ({acc_verif.get('account_name')}) is not an authorized XLM Operational Account. XLM refills must be sent strictly to authorized accounts (00799999001738866535).",
                 }, status=status.HTTP_400_BAD_REQUEST)
 
             matched_bm_account = BaridiMobAccount.objects.filter(id=acc_verif.get('account_id')).first() if acc_verif.get('is_registered') else None

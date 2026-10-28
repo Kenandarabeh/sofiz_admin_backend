@@ -1686,6 +1686,13 @@ class LiquidityRetraitRecord(models.Model):
                     or StellarWallet.objects.filter(family=WalletFamily.ESIM, role=WalletRole.COLLECTION, is_active=True).first()
                     or StellarWallet.objects.filter(family=WalletFamily.ESIM, is_active=True).first()
                 )
+            elif self.system_type == SubSystemType.XLM:
+                self.source_wallet = (
+                    StellarWallet.objects.filter(family=WalletFamily.XLM, is_active=True).first()
+                    or StellarWallet.objects.filter(role=WalletRole.VAULT, is_active=True).first()
+                    or StellarWallet.objects.filter(category=WalletCategory.SWEEP_VAULT, is_active=True).first()
+                    or StellarWallet.objects.filter(category=WalletCategory.TREASURY, is_active=True).first()
+                )
             else:  # GAMING
                 self.source_wallet = (
                     settings.games_collection_wallet
