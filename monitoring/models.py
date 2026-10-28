@@ -61,11 +61,11 @@ class SweepStatus(models.TextChoices):
 
 
 class SupplierProvider(models.TextChoices):
-    G2BULK = 'G2BULK', 'G2Bulk (Official Gaming Provider)'
+    G2BULK = 'G2BULK', 'Digital Services Account ( g2bulk ) (Official Gaming Provider)'
 
 
 class SubSystemType(models.TextChoices):
-    GAMING = 'GAMING', 'Gaming Working Capital (G2Bulk Supplier)'
+    GAMING = 'GAMING', 'Gaming Working Capital (Digital Services Account ( g2bulk ))'
     UTILITY = 'UTILITY', 'Utility Bills Working Capital (BaridiMob)'
     ESIM = 'ESIM', 'eSIM & Telecom Working Capital'
     IDOOM = 'IDOOM', 'Idoom Working Capital & Vouchers'
@@ -84,7 +84,7 @@ class BinanceVerificationStatus(models.TextChoices):
 
 
 class WithdrawalType(models.TextChoices):
-    SUPPLIER_FUNDING = 'SUPPLIER_FUNDING', 'Supplier Account Funding (Purchasing G2Bulk Balance)'
+    SUPPLIER_FUNDING = 'SUPPLIER_FUNDING', 'Supplier Account Funding (Purchasing Digital Services Account ( g2bulk ) Balance)'
     LIQUIDITY_REFILL = 'LIQUIDITY_REFILL', 'Operational Liquidity Refill (eSIM / Gaming Procurement)'
     PROFIT_WITHDRAWAL = 'PROFIT_WITHDRAWAL', 'Profit / Capital Withdrawal (Owner Payout)'
     LIQUIDITY_TRANSFER = 'LIQUIDITY_TRANSFER', 'Internal Liquidity Transfer'
@@ -96,15 +96,15 @@ class WithdrawalPurpose(models.TextChoices):
     Confined institutional purpose choices for fund outflows & supplier funding.
     Includes standardized audit notes for zero-discrepancy financial tracking.
     """
-    G2BULK_P2P = 'G2BULK_P2P', 'G2Bulk Wholesale Balance Funding (Binance P2P)'
-    G2BULK_DIRECT = 'G2BULK_DIRECT', 'G2Bulk Wholesale Direct Balance Top-Up'
-    G2BULK_EMERGENCY = 'G2BULK_EMERGENCY', 'G2Bulk Emergency Liquidity Injection'
+    G2BULK_P2P = 'G2BULK_P2P', 'Digital Services Account ( g2bulk ) Wholesale Balance Funding (Binance P2P)'
+    G2BULK_DIRECT = 'G2BULK_DIRECT', 'Digital Services Account ( g2bulk ) Wholesale Direct Balance Top-Up'
+    G2BULK_EMERGENCY = 'G2BULK_EMERGENCY', 'Digital Services Account ( g2bulk ) Emergency Liquidity Injection'
     GAMING_PROFIT_PAYOUT = 'GAMING_PROFIT_PAYOUT', 'Gaming Net Profit Distribution (Owner Payout)'
     BARIDIMOB_UTILITY_RECHARGE = 'BARIDIMOB_UTILITY_RECHARGE', 'BaridiMob Utility Account Liquidity Injection (Sihaam31)'
     SONELGAZ_SETTLEMENT = 'SONELGAZ_SETTLEMENT', 'Sonelgaz Settlement Balance Allocation'
     ADE_SETTLEMENT = 'ADE_SETTLEMENT', 'ADE Water Settlement Balance Allocation'
     AT_SETTLEMENT = 'AT_SETTLEMENT', 'Algérie Télécom Settlement Balance Allocation'
-    ESIM_REFILL = 'ESIM_REFILL', 'eSIM & Telecom Balance Refill (Airalo / Telecom Partner)'
+    ESIM_REFILL = 'ESIM_REFILL', 'eSIM & Telecom Balance Refill (eSIM Account / Telecom Partner)'
     IDOOM_STOCK_REFILL = 'IDOOM_STOCK_REFILL', 'Idoom Vouchers & Inventory Procurement Refill'
     IPTV_STOCK_REFILL = 'IPTV_STOCK_REFILL', 'IPTV Subscriptions & Inventory Procurement Refill'
     FLEXY_REFILL = 'FLEXY_REFILL', 'Flexy Wholesale Operational Balance Refill (Shemsnet)'
@@ -117,15 +117,15 @@ class WithdrawalPurpose(models.TextChoices):
     def get_default_notes(cls, code: str) -> str:
         """Standardized institutional audit notes and accounting descriptions for each purpose"""
         notes_mapping = {
-            cls.G2BULK_P2P: "Acquiring USDT via BaridiMob P2P on Binance to fund official G2Bulk wholesale balance for gaming top-ups.",
-            cls.G2BULK_DIRECT: "Direct institutional crypto/wire transfer to G2Bulk supplier account to replenish wholesale gaming inventory.",
-            cls.G2BULK_EMERGENCY: "Immediate rapid-fill liquidity injection to G2Bulk supplier balance to prevent customer gamer order disruptions.",
+            cls.G2BULK_P2P: "Acquiring USDT via BaridiMob P2P on Binance to fund official Digital Services Account ( g2bulk ) wholesale balance for gaming top-ups.",
+            cls.G2BULK_DIRECT: "Direct institutional crypto/wire transfer to Digital Services Account ( g2bulk ) supplier account to replenish wholesale gaming inventory.",
+            cls.G2BULK_EMERGENCY: "Immediate rapid-fill liquidity injection to Digital Services Account ( g2bulk ) supplier balance to prevent customer gamer order disruptions.",
             cls.GAMING_PROFIT_PAYOUT: "Audited distribution of accrued net profits generated from gamer top-up sales (owner capital withdrawal).",
-            cls.BARIDIMOB_UTILITY_RECHARGE: "Recharging BaridiMob postal card (Sihaam31) to settle customer Sonelgaz, ADE, and Algérie Télécom bills.",
+            cls.BARIDIMOB_UTILITY_RECHARGE: "Recharging BaridiMob account (Sihaam31) to settle customer Sonelgaz, ADE, and Algérie Télécom bills.",
             cls.SONELGAZ_SETTLEMENT: "Batch settlement allocation for customer electricity and gas invoices on Sonelgaz ELIT electronic gateway.",
             cls.ADE_SETTLEMENT: "Batch settlement allocation for water utility bills via Algérienne Des Eaux payment portal.",
             cls.AT_SETTLEMENT: "Batch settlement allocation for Internet ADSL/Fibre and fixed telephone bills via Algérie Télécom portal.",
-            cls.ESIM_REFILL: "Replenishing operational funds for Airalo eSIM data packages procurement and international roaming distribution.",
+            cls.ESIM_REFILL: "Replenishing operational funds for eSIM Account data packages procurement and international roaming distribution.",
             cls.IDOOM_STOCK_REFILL: "Procurement replenishment of Idoom ADSL/Fibre/4G LTE vouchers and allocation to Big Wallet with profit segregation.",
             cls.IPTV_STOCK_REFILL: "Procurement replenishment of IPTV server subscription vouchers and allocation to Big Wallet with profit segregation.",
             cls.FLEXY_REFILL: "Procurement replenishment of Flexy telecom operational balance on Shemsnet with tranche audit and profit segregation.",
@@ -140,7 +140,7 @@ class WithdrawalPurpose(models.TextChoices):
 class WithdrawalStage(models.TextChoices):
     ALLOCATED = 'ALLOCATED', '1. BaridiMob Dispatched'
     BINANCE_P2P = 'BINANCE_P2P', '2. Binance P2P Acquired'
-    COMPLETED = 'COMPLETED', '3. G2Bulk Confirmed & Closed'
+    COMPLETED = 'COMPLETED', '3. Digital Services Account ( g2bulk ) Confirmed & Closed'
     CANCELLED = 'CANCELLED', 'Cancelled'
 
 
@@ -153,7 +153,7 @@ class RetraitStatus(models.TextChoices):
 
 class FundingCycleStatus(models.TextChoices):
     PENDING_P2P = 'PENDING_P2P', 'In Custody / Pending P2P Purchase'
-    P2P_COMPLETED = 'P2P_COMPLETED', 'P2P Purchased (Pending G2Bulk Transfer)'
+    P2P_COMPLETED = 'P2P_COMPLETED', 'P2P Purchased (Pending Digital Services Account ( g2bulk ) Transfer)'
     G2BULK_FUNDED = 'G2BULK_FUNDED', 'Fully Completed & Verified'
     REJECTED = 'REJECTED', 'Rejected / Invalid'
 
@@ -198,8 +198,8 @@ class MonitoringGlobalSettings(models.Model):
         help_text="Operating mode: Real Live Data strictly enforced."
     )
 
-    g2bulk_api_key = EncryptedCharField(max_length=500, blank=True, null=True, verbose_name="G2Bulk API Key")
-    g2bulk_base_url = models.CharField(max_length=255, default="https://api.g2bulk.com/v1", verbose_name="G2Bulk Base URL")
+    g2bulk_api_key = EncryptedCharField(max_length=500, blank=True, null=True, verbose_name="Digital Services Account ( g2bulk ) API Key")
+    g2bulk_base_url = models.CharField(max_length=255, default="https://api.g2bulk.com/v1", verbose_name="Digital Services Account ( g2bulk ) Base URL")
     stellar_horizon_url = models.CharField(max_length=255, default="https://horizon.stellar.org", verbose_name="Stellar Horizon URL")
     dzt_asset_code = models.CharField(max_length=20, default="DZT", verbose_name="DZT Asset Code")
     dzt_asset_issuer = models.CharField(
@@ -243,14 +243,14 @@ class MonitoringGlobalSettings(models.Model):
         max_digits=15,
         decimal_places=4,
         default=Decimal("500.0000"),
-        verbose_name="G2Bulk Minimum Balance Threshold (USD $)",
+        verbose_name="Digital Services Account ( g2bulk ) Minimum Balance Threshold (USD $)",
         help_text="Configured by Super Administrator. Triggers replenishment alert if live balance drops below this amount."
     )
     gaming_baridimob_min_threshold_dzd = models.DecimalField(
         max_digits=18,
         decimal_places=2,
         default=Decimal("10000.00"),
-        verbose_name="Gaming Account Refill Alert Threshold (DZD)",
+        verbose_name="Digital Services Operational Account Refill Alert Threshold (DZD)",
         help_text="Configured in Django Admin. Triggers replenishment alert when Gaming operational BaridiMob account balance drops below this amount."
     )
     utility_baridimob_min_threshold_dzd = models.DecimalField(
@@ -874,7 +874,7 @@ class SupplierAccount(models.Model):
         unique=True,
         verbose_name="Provider"
     )
-    name = models.CharField(max_length=100, default="Official G2Bulk Account", verbose_name="Account Name")
+    name = models.CharField(max_length=100, default="Digital Services Account ( g2bulk )", verbose_name="Account Name")
     api_key = models.CharField(max_length=255, blank=True, null=True, verbose_name="API Key")
     balance_usd = models.DecimalField(max_digits=15, decimal_places=4, default=Decimal("0.0000"), verbose_name="Live Balance (USD $)")
     balance_dzd_equivalent = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Equivalent in DZD")
@@ -895,7 +895,7 @@ class SupplierAccount(models.Model):
 
     class Meta:
         verbose_name = "Supplier Account"
-        verbose_name_plural = "Gaming Supplier Accounts (G2Bulk)"
+        verbose_name_plural = "Gaming Supplier Accounts (Digital Services Account ( g2bulk ))"
         ordering = ['name']
 
     def __str__(self):
@@ -949,13 +949,13 @@ class G2BulkReplenishmentWindow(models.Model):
 
     # Financial metrics for audit trail
     initial_balance_usd = models.DecimalField(
-        max_digits=15, decimal_places=4, default=Decimal("0.0000"), verbose_name="Initial G2Bulk Balance ($ USD)"
+        max_digits=15, decimal_places=4, default=Decimal("0.0000"), verbose_name="Initial Digital Services Account ( g2bulk ) Balance ($ USD)"
     )
     target_replenish_amount_usd = models.DecimalField(
         max_digits=15, decimal_places=4, null=True, blank=True, verbose_name="Target Replenishment ($ USD)"
     )
     final_balance_usd = models.DecimalField(
-        max_digits=15, decimal_places=4, null=True, blank=True, verbose_name="Final G2Bulk Balance ($ USD)"
+        max_digits=15, decimal_places=4, null=True, blank=True, verbose_name="Final Digital Services Account ( g2bulk ) Balance ($ USD)"
     )
 
     # Audit outcome after expiration or completion
@@ -971,8 +971,8 @@ class G2BulkReplenishmentWindow(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        verbose_name = "G2Bulk Replenishment Grace Window"
-        verbose_name_plural = "G2Bulk Replenishment Grace Windows"
+        verbose_name = "Digital Services Account ( g2bulk ) Replenishment Grace Window"
+        verbose_name_plural = "Digital Services Account ( g2bulk ) Replenishment Grace Windows"
         ordering = ['-started_at']
         indexes = [
             models.Index(fields=['status', 'expires_at'], name='idx_g2b_win_status_exp'),
@@ -1445,9 +1445,9 @@ class WithdrawalRecord(models.Model):
     p2p_order_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="Binance P2P Order ID")
     p2p_rate = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, verbose_name="P2P Unit Rate (DZD/USDT)")
     binance_pay_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="Binance Pay Transaction ID")
-    g2bulk_transaction_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="G2Bulk Deposit Transaction ID")
-    supplier_pay_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="Binance Pay ID / G2Bulk Reference")
-    g2bulk_confirmed_increase_usd = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True, verbose_name="G2Bulk Confirmed Increase ($ USD)")
+    g2bulk_transaction_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="Digital Services Account ( g2bulk ) Deposit Transaction ID")
+    supplier_pay_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="Binance Pay ID / Digital Services Account ( g2bulk ) Reference")
+    g2bulk_confirmed_increase_usd = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True, verbose_name="Digital Services Account ( g2bulk ) Confirmed Increase ($ USD)")
     binance_fee_usd = models.DecimalField(max_digits=12, decimal_places=4, default=Decimal("0.0000"), verbose_name="Binance Transfer / Network Fee ($ USD)")
     binance_fee_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Binance Transfer Fee Equivalent (DZD)")
     reference = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="Transaction Reference / Hash")
@@ -1466,6 +1466,24 @@ class WithdrawalRecord(models.Model):
     receipt_amount_dzd = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True, verbose_name="Receipt Verified Amount (DZD)")
     receipt_verified = models.BooleanField(default=False, verbose_name="Receipt Account Verified")
     notes = models.TextField(blank=True, null=True, verbose_name="Notes & Details")
+    created_by = models.CharField(max_length=150, blank=True, null=True, db_index=True, verbose_name="Created By Operator")
+    operator_name = models.CharField(max_length=150, blank=True, null=True, db_index=True, verbose_name="Last Modified By / Active Operator")
+    created_by_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_withdrawal_records',
+        verbose_name="Creator User"
+    )
+    last_operator_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='operated_withdrawal_records',
+        verbose_name="Last Acting Operator User"
+    )
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -1552,26 +1570,26 @@ class WithdrawalRecord(models.Model):
         if self.stage == WithdrawalStage.ALLOCATED:
             return {
                 'key': 'BUY_BINANCE_P2P',
-                'title': 'Advance to Stage 2: Binance P2P Purchase',
-                'instruction': 'Acquire USDT on Binance P2P with the transferred DZD funds and attach the Binance Order ID & Rate.',
+                'title': 'Advance to Stage 2: Binance P2P',
+                'instruction': 'Enter Binance P2P order to record acquired USDT.',
                 'target_stage': WithdrawalStage.BINANCE_P2P,
-                'target_stage_label': '2. Binance P2P Acquired',
+                'target_stage_label': '2. P2P Acquired',
             }
         elif self.stage == WithdrawalStage.BINANCE_P2P:
             return {
-                'key': 'CONFIRM_G2BULK_CREDIT',
-                'title': 'Advance to Stage 3: G2Bulk Wholesale Credit & Close',
-                'instruction': 'Transfer acquired USDT to G2Bulk via Binance Pay and verify supplier credit to finalize & close.',
+                'key': 'CONFIRM_DIGITAL_SERVICES_CREDIT',
+                'title': 'Advance to Stage 3: Digital Services Credit',
+                'instruction': 'Enter deposit reference to credit Digital Services Account ( g2bulk ) and close.',
                 'target_stage': WithdrawalStage.COMPLETED,
-                'target_stage_label': '3. G2Bulk Confirmed & Closed',
+                'target_stage_label': '3. Closed',
             }
         elif self.stage == WithdrawalStage.COMPLETED:
             return {
                 'key': 'DONE',
-                'title': 'Workflow Completed',
-                'instruction': 'Withdrawal has been fully settled, verified, and audited with zero discrepancy across all 3 stages.',
+                'title': 'Completed',
+                'instruction': 'Fully credited and closed.',
                 'target_stage': None,
-                'target_stage_label': '3. G2Bulk Confirmed & Closed',
+                'target_stage_label': '3. Closed',
             }
         return {
             'key': 'NONE',
@@ -1698,13 +1716,13 @@ class GamingWithdrawalManager(models.Manager):
 
 
 class GamingWithdrawalRecord(WithdrawalRecord):
-    """Proxy model for Gaming Withdrawals & Supplier Funding (G2Bulk)"""
+    """Proxy model for Digital Services Withdrawals & Supplier Funding (Digital Services Account ( g2bulk ))"""
     objects = GamingWithdrawalManager()
 
     class Meta:
         proxy = True
         verbose_name = "Gaming Withdrawal / Supplier Funding"
-        verbose_name_plural = "Gaming Withdrawals & Supplier Funding (G2Bulk)"
+        verbose_name_plural = "Digital Services Withdrawals & Supplier Funding (Digital Services Account ( g2bulk ))"
 
 
 class UtilityWithdrawalManager(models.Manager):
@@ -1762,13 +1780,12 @@ class BaridiMobFundingReceipt(models.Model):
     Automated BaridiMob Transfer Receipts for G2Bulk Funding.
     Uploaded via PDF or Image, automatically parsed, verified against duplicates,
     executes the internal Stellar transfer from Games Collection to Central Treasury,
-    records the 50 DZD BaridiMob fee expense, and tracks Binance P2P and G2Bulk funding.
+    and tracks Binance P2P and G2Bulk funding.
     """
     receipt_file = models.FileField(upload_to='receipts/%Y/%m/', null=True, blank=True, verbose_name="BaridiMob Receipt File (PDF or Image) (Deprecated - No Files Stored)")
     reference = models.CharField(max_length=100, unique=True, null=True, blank=True, db_index=True, verbose_name="Transaction Reference / N° Transaction")
     file_hash = models.CharField(max_length=64, unique=True, null=True, blank=True, db_index=True, verbose_name="SHA256 File Hash")
     amount_dzd = models.DecimalField(max_digits=18, decimal_places=2, blank=True, null=True, verbose_name="Receipt Amount (DZD / DZT)")
-    fee_dzd = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("50.00"), blank=True, verbose_name="BaridiMob Fee (DZD)")
     recipient_rip = models.CharField(max_length=50, blank=True, null=True, db_index=True, verbose_name="Recipient RIP")
     responsible_person = models.CharField(max_length=150, default="P2P Purchasing Officer", verbose_name="Responsible Person / Agent Name")
 
@@ -1791,14 +1808,14 @@ class BaridiMobFundingReceipt(models.Model):
     )
     stellar_tx_hash = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="Stellar Internal Transfer TX Hash")
 
-    # Linked Operational Fee, Supplier & Withdrawal Records
+    # Linked Expense, Supplier & Withdrawal Records
     expense_record = models.ForeignKey(
         'ExpenseRecord',
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
         related_name='funding_receipts',
-        verbose_name="Fee Expense Record (50 DZD)"
+        verbose_name="Associated Expense Record"
     )
     supplier_account = models.ForeignKey(
         SupplierAccount,
@@ -1821,9 +1838,9 @@ class BaridiMobFundingReceipt(models.Model):
     binance_order_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="Binance P2P / Pay Order ID")
     usdt_acquired = models.DecimalField(max_digits=15, decimal_places=4, null=True, blank=True, verbose_name="USDT Acquired")
     p2p_rate = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, verbose_name="P2P Exchange Rate")
-    usdt_sent_to_g2bulk = models.DecimalField(max_digits=15, decimal_places=4, null=True, blank=True, verbose_name="USDT Sent to G2Bulk")
+    usdt_sent_to_g2bulk = models.DecimalField(max_digits=15, decimal_places=4, null=True, blank=True, verbose_name="USDT Sent to Digital Services Account ( g2bulk )")
     binance_fee_usd = models.DecimalField(max_digits=12, decimal_places=4, default=Decimal("0.0000"), verbose_name="Binance Transfer Fee ($ USD)")
-    g2bulk_increase_usd = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True, verbose_name="G2Bulk Confirmed Increase ($ USD)")
+    g2bulk_increase_usd = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True, verbose_name="Digital Services Account ( g2bulk ) Confirmed Increase ($ USD)")
 
     status = models.CharField(
         max_length=30,
@@ -2010,10 +2027,10 @@ class BalanceAuditLog(models.Model):
     """
     checked_at = models.DateTimeField(auto_now_add=True, db_index=True, verbose_name="Audit Timestamp")
     total_dzt_wallets = models.DecimalField(max_digits=18, decimal_places=2, verbose_name="Stellar DZT Wallets Total (DZD)")
-    total_g2bulk_dzd = models.DecimalField(max_digits=18, decimal_places=2, verbose_name="G2Bulk Total Equivalent (DZD)")
+    total_g2bulk_dzd = models.DecimalField(max_digits=18, decimal_places=2, verbose_name="Digital Services Account ( g2bulk ) Total Equivalent (DZD)")
     total_baridimob_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="BaridiMob Total Working Capital (DZD)")
     total_in_transit_dzd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="In-Transit Funding Refills (DZD)")
-    total_assets_dzd = models.DecimalField(max_digits=18, decimal_places=2, verbose_name="Total Current Assets (DZT + G2Bulk + BaridiMob + In-Transit)")
+    total_assets_dzd = models.DecimalField(max_digits=18, decimal_places=2, verbose_name="Total Current Assets (DZT + Digital Services Account ( g2bulk ) + BaridiMob + In-Transit)")
     total_expenses_dzd = models.DecimalField(max_digits=18, decimal_places=2, verbose_name="Total Expenses & Fees (DZD)")
     
     # Left side = Assets + Expenses
@@ -2151,6 +2168,7 @@ class OperatorActionLog(models.Model):
         UPDATE = 'UPDATE', '🔵 Update / Modification'
         DELETE = 'DELETE', '🔴 Delete / Removal'
         ACTION_EXECUTE = 'ACTION_EXECUTE', '⚡ Critical Action Executed'
+        ERROR = 'ERROR', '⚠️ System / Operational Error'
 
     timestamp = models.DateTimeField(auto_now_add=True, db_index=True, verbose_name="Action Timestamp")
     operator = models.ForeignKey(
@@ -2226,8 +2244,8 @@ class BybitAccount(models.Model):
 
 
 class AiraloAccount(models.Model):
-    """Dedicated Airalo eSIM Wholesale Provider Account for Data Packages"""
-    account_name = models.CharField(max_length=150, default="Official Airalo Partner Account", verbose_name="Account Label")
+    """Dedicated eSIM Wholesale Provider Account for Data Packages"""
+    account_name = models.CharField(max_length=150, default="Official eSIM Partner Account", verbose_name="Account Label")
     available_balance_usd = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"), verbose_name="Available Credit Balance ($ USD)")
     is_active = models.BooleanField(default=True, db_index=True, verbose_name="Is Active")
     last_synced_at = models.DateTimeField(null=True, blank=True, verbose_name="Last Synced At")
@@ -2237,8 +2255,8 @@ class AiraloAccount(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        verbose_name = "Airalo eSIM Account"
-        verbose_name_plural = "Airalo eSIM Accounts (Wholesale)"
+        verbose_name = "eSIM Account"
+        verbose_name_plural = "eSIM Accounts"
         ordering = ['-available_balance_usd']
 
     def __str__(self):
@@ -2260,14 +2278,14 @@ class eSIMFundingStage(models.TextChoices):
     BARIDIMOB_DISPATCHED = 'BARIDIMOB_DISPATCHED', '1. BaridiMob Dispatched'
     BINANCE_P2P = 'BINANCE_P2P', '2. Binance P2P Acquired'
     BYBIT_FUNDED = 'BYBIT_FUNDED', '3. Bybit Funded & Visa Card Allocated'
-    AIRALO_COMPLETED = 'AIRALO_COMPLETED', '4. Airalo Confirmed & Closed'
+    AIRALO_COMPLETED = 'AIRALO_COMPLETED', '4. eSIM Account Confirmed & Closed'
     CANCELLED = 'CANCELLED', 'Cancelled'
 
 
 class eSIMFundingRecord(models.Model):
     """
     Dedicated 4-Stage Replenishment Pipeline for eSIM & Telecom Operations:
-    Stage 1: BaridiMob Dispatched (gaming Account)
+    Stage 1: BaridiMob Dispatched (Digital Services Operational Account)
     Stage 2: Binance P2P Acquired (USDT)
     Stage 3: Bybit Funded & Visa Card Allocated (USDT -> Visa Card)
     Stage 4: Airalo Confirmed & Closed (eSIM Packages Acquired)
@@ -2307,11 +2325,11 @@ class eSIMFundingRecord(models.Model):
     bybit_verified_at = models.DateTimeField(null=True, blank=True, verbose_name="Bybit Verified At")
     visa_card_last4 = models.CharField(max_length=10, blank=True, null=True, default="Bybit Visa", verbose_name="Visa Card Identifier")
 
-    # Stage 4: Airalo Supplier
-    airalo_order_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="Airalo Order ID")
-    airalo_package_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="Airalo Package Code")
-    airalo_confirmed_amount_usd = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True, verbose_name="Airalo Confirmed Increase ($ USD)")
-    airalo_verified = models.BooleanField(default=False, verbose_name="Airalo Order Verified")
+    # Stage 4: eSIM Supplier
+    airalo_order_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="eSIM Account Order ID")
+    airalo_package_id = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name="eSIM Account Package Code")
+    airalo_confirmed_amount_usd = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True, verbose_name="eSIM Account Confirmed Increase ($ USD)")
+    airalo_verified = models.BooleanField(default=False, verbose_name="eSIM Account Order Verified")
 
     notes = models.TextField(blank=True, null=True, verbose_name="Notes & Audit Trail")
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
@@ -2328,7 +2346,7 @@ class eSIMFundingRecord(models.Model):
 
 class eSIMOrderRecord(models.Model):
     """eSIM package orders and commission / profit records"""
-    order_id = models.CharField(max_length=100, unique=True, db_index=True, verbose_name="Order ID / Airalo Order")
+    order_id = models.CharField(max_length=100, unique=True, db_index=True, verbose_name="Order ID / eSIM Account Order")
     package_id = models.CharField(max_length=100, db_index=True, verbose_name="Package Code")
     package_name = models.CharField(max_length=150, blank=True, null=True, verbose_name="Package Description")
     customer_phone = models.CharField(max_length=50, blank=True, null=True, verbose_name="Customer Phone / User")
@@ -2349,8 +2367,8 @@ class eSIMOrderRecord(models.Model):
 
 
 class AccountMonitoringChannel(models.TextChoices):
-    G2BULK = "g2bulk", "G2Bulk Wholesale Inventory"
-    AIRALO = "airalo", "Airalo eSIM Telecom Wholesale"
+    G2BULK = "g2bulk", "Digital Services Wholesale Inventory"
+    AIRALO = "airalo", "eSIM Telecom Wholesale Account"
     BARIDIMOB_ESIM_QUOTA = "baridimob_esim_quota", "BaridiMob (eSIM Quota)"
     ECCP_ESIM_QUOTA = "eccp_esim_quota", "ECCP (eSIM Quota)"
     BARIDIMOB_GAME_QUOTA = "baridimob_game_quota", "BaridiMob (Gaming Quota)"
@@ -2372,7 +2390,7 @@ class AccountBalanceSnapshot(models.Model):
     )
     account_label = models.CharField(max_length=150, verbose_name="Account Label / Title")
     activity = models.CharField(max_length=50, db_index=True, verbose_name="Activity (Gaming, eSIM, Facture, Wholesale)")
-    source_type = models.CharField(max_length=50, db_index=True, verbose_name="Source Type (BaridiMob, ECCP, G2Bulk, Airalo)")
+    source_type = models.CharField(max_length=50, db_index=True, verbose_name="Source Type (BaridiMob, ECCP, Digital Services, eSIM Account)")
 
     # Balances
     current_balance = models.DecimalField(max_digits=18, decimal_places=4, verbose_name="Current Balance (Native)")
@@ -2674,7 +2692,14 @@ class XLMLiquidityFundingRecord(models.Model):
     vault_balance_after_xlm = models.DecimalField(max_digits=18, decimal_places=7, null=True, blank=True, verbose_name="Vault XLM Balance After Refill")
 
     # Audit & Tracking
-    executed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, verbose_name="Executing Officer")
+    executed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='xlm_cycles_initiated', verbose_name="Executing Officer")
+    stage_1_at = models.DateTimeField(null=True, blank=True, verbose_name="Stage 1 Initiated Timestamp")
+    stage_2_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='xlm_cycles_stage_2', verbose_name="Stage 2 Binance Officer")
+    stage_2_at = models.DateTimeField(null=True, blank=True, verbose_name="Stage 2 Completed Timestamp")
+    stage_3_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='xlm_cycles_stage_3', verbose_name="Stage 3 Convert Officer")
+    stage_3_at = models.DateTimeField(null=True, blank=True, verbose_name="Stage 3 Completed Timestamp")
+    stage_4_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='xlm_cycles_stage_4', verbose_name="Stage 4 Horizon Verifier")
+    stage_4_at = models.DateTimeField(null=True, blank=True, verbose_name="Stage 4 Completed Timestamp")
     notes = models.TextField(blank=True, default='', verbose_name="Audit & Compliance Notes")
     created_at = models.DateTimeField(auto_now_add=True, db_index=True, verbose_name="Creation Timestamp")
     updated_at = models.DateTimeField(auto_now=True, verbose_name="Last Updated Timestamp")

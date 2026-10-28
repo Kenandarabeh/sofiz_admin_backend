@@ -134,11 +134,11 @@ class AccountMonitoringService:
             notes="Wholesale gaming digital codes & pins inventory balance",
         )
 
-        # 2. Airalo eSIM Wholesale
+        # 2. eSIM Telecom Wholesale
         air = AiraloAccount.objects.first()
         if not air:
             air = AiraloAccount.objects.create(
-                account_name="Official Airalo Partner Account",
+                account_name="Official eSIM Partner Account",
                 available_balance_usd=Decimal("0.00"),
                 is_active=True
             )
@@ -147,9 +147,9 @@ class AccountMonitoringService:
         air_dzd = air.balance_dzd_equivalent
         cls.record_snapshot(
             channel=AccountMonitoringChannel.AIRALO,
-            account_label="Airalo eSIM Wholesale Partner",
+            account_label="eSIM Account Wholesale Partner",
             activity="eSIM",
-            source_type="Airalo",
+            source_type="eSIM Account",
             current_balance=air_usd,
             currency="USD",
             current_balance_dzd=air_dzd,
@@ -179,7 +179,7 @@ class AccountMonitoringService:
         game_eccp_quota = game_card_quota
         esim_eccp_quota = esim_card_quota
 
-        # Find latest transaction for gaming account
+        # Find latest transaction for Digital Services Operational Account
         latest_gaming_tx = BaridiMobTransaction.objects.filter(account=gaming).order_by("-transaction_date").first() if gaming else None
 
         # BaridiMob (Quota Game)
@@ -196,7 +196,7 @@ class AccountMonitoringService:
             causing_tx_desc=latest_gaming_tx.description if latest_gaming_tx else None,
             causing_tx_amount=latest_gaming_tx.amount if latest_gaming_tx else None,
             last_synced_at=gaming_card_sync,
-            notes=f"BaridiMob Card operational quota (Target: {game_target_val:,.2f} DZD, derived from active operational withdrawals) - gaming Account",
+            notes=f"BaridiMob Card operational quota (Target: {game_target_val:,.2f} DZD, derived from active operational withdrawals) - Digital Services Operational Account",
         )
 
         # ECCP (Quota Game)

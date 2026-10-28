@@ -19,7 +19,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='monitoringglobalsettings',
             name='gaming_baridimob_min_threshold_dzd',
-            field=models.DecimalField(decimal_places=2, default=Decimal('10000.00'), help_text='Configured in Django Admin. Triggers replenishment alert when Gaming operational BaridiMob account balance drops below this amount.', max_digits=18, verbose_name='Gaming Account Refill Alert Threshold (DZD)'),
+            field=models.DecimalField(decimal_places=2, default=Decimal('10000.00'), help_text='Configured in Django Admin. Triggers replenishment alert when Gaming operational BaridiMob account balance drops below this amount.', max_digits=18, verbose_name='Digital Services Operational Account Refill Alert Threshold (DZD)'),
         ),
         migrations.AddField(
             model_name='monitoringglobalsettings',

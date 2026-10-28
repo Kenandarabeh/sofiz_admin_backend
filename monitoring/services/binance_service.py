@@ -491,4 +491,239 @@ class BinanceApiService:
             logger.error(f"Binance withdraw history call failed: {e}")
             return {'success': False, 'withdrawals': [], 'error': str(e)}
 
+    @classmethod
+    def get_convert_trade_history(cls, from_asset: str = "USDT", to_asset: str = "XLM", limit: int = 50) -> dict:
+        """
+        Fetches verified conversion trades (USDT -> XLM) from Binance API:
+        1. Queries Binance Convert Trade Flow (/sapi/v1/convert/tradeFlow)
+        2. Queries Spot Trade executions (/api/v3/myTrades for XLMUSDT)
+        Returns a unified list of verified conversions.
+        """
+        import time
+        settings = MonitoringGlobalSettings.get_settings()
+        if not settings.binance_api_key or not settings.binance_api_secret:
+            return {'success': False, 'conversions': [], 'error': 'Binance API credentials missing.'}
+
+        headers = {"X-MBX-APIKEY": settings.binance_api_key}
+        conversions = []
+
+        now_ms = int(time.time() * 1000)
+        start_ms = now_ms - (30 * 86400 * 1000)  # Last 30 days
+
+        # 1. Query Binance Convert (/sapi/v1/convert/tradeFlow)
+        try:
+            convert_endpoint = f"{cls.BASE_URL}/sapi/v1/convert/tradeFlow"
+            convert_params = {
+                'startTime': start_ms,
+                'endTime': now_ms,
+                'limit': limit,
+            }
+            cls._sign_params(convert_params, settings.binance_api_secret)
+            with httpx.Client(timeout=10.0) as client:
+                res = client.get(convert_endpoint, params=convert_params, headers=headers)
+                data = res.json()
+                if res.status_code == 200 and isinstance(data, dict):
+                    trade_list = data.get('list', [])
+                    for t in trade_list:
+                        f_asset = str(t.get('fromAsset', '')).upper()
+                        t_asset = str(t.get('toAsset', '')).upper()
+                        if (not from_asset or f_asset == from_asset.upper()) and (not to_asset or t_asset == to_asset.upper()):
+                            conversions.append({
+                                'order_id': str(t.get('orderId') or t.get('quoteId') or ''),
+                                'type': 'BINANCE_CONVERT',
+                                'status': t.get('orderStatus', 'SUCCESS'),
+                                'from_asset': f_asset,
+                                'from_amount': float(t.get('fromAmount') or 0.0),
+                                'to_asset': t_asset,
+                                'to_amount': float(t.get('toAmount') or 0.0),
+                                'ratio': float(t.get('ratio') or 0.0),
+                                'inverse_ratio': float(t.get('inverseRatio') or 0.0),
+                                'timestamp': t.get('createTime'),
+                                'created_at': timezone.datetime.fromtimestamp(t.get('createTime', now_ms) / 1000.0, tz=timezone.utc).isoformat() if t.get('createTime') else None,
+                            })
+        except Exception as e:
+            logger.warning(f"Binance convert trade flow query note: {e}")
+
+        # 2. Query Spot Trades (/api/v3/myTrades for XLMUSDT)
+        try:
+            symbol = f"{to_asset.upper()}{from_asset.upper()}"  # XLMUSDT
+            spot_endpoint = f"{cls.BASE_URL}/api/v3/myTrades"
+            spot_params = {
+                'symbol': symbol,
+                'limit': limit,
+            }
+            cls._sign_params(spot_params, settings.binance_api_secret)
+            with httpx.Client(timeout=10.0) as client:
+                res = client.get(spot_endpoint, params=spot_params, headers=headers)
+                data = res.json()
+                if res.status_code == 200 and isinstance(data, list):
+                    for st in data:
+                        if st.get('isBuyer', True):
+                            qty_xlm = float(st.get('qty') or 0.0)
+                            quote_usdt = float(st.get('quoteQty') or 0.0)
+                            price = float(st.get('price') or 0.0)
+                            commission = float(st.get('commission') or 0.0)
+                            comm_asset = st.get('commissionAsset')
+                            conversions.append({
+                                'order_id': str(st.get('orderId') or st.get('id') or ''),
+                                'type': 'SPOT_TRADE',
+                                'status': 'FILLED',
+                                'from_asset': from_asset.upper(),
+                                'from_amount': quote_usdt,
+                                'to_asset': to_asset.upper(),
+                                'to_amount': qty_xlm,
+                                'ratio': price,
+                                'inverse_ratio': round(1.0 / price, 4) if price > 0 else 0.0,
+                                'commission': commission,
+                                'commission_asset': comm_asset,
+                                'timestamp': st.get('time'),
+                                'created_at': timezone.datetime.fromtimestamp(st.get('time', now_ms) / 1000.0, tz=timezone.utc).isoformat() if st.get('time') else None,
+                            })
+        except Exception as e:
+            logger.warning(f"Binance spot trades query note: {e}")
+
+        # Sort by timestamp descending
+        conversions.sort(key=lambda x: x.get('timestamp') or 0, reverse=True)
+
+        return {
+            'success': True,
+            'conversions': conversions,
+            'count': len(conversions),
+        }
+
+    @classmethod
+    def get_all_consumed_binance_identifiers(cls) -> set:
+        """
+        Unified cross-module anti-double-spending repository.
+        Collects all consumed Binance order IDs, Pay IDs, transaction hashes,
+        withdrawal IDs, and convert trade IDs across ALL 3 modules:
+        1. Game / Digital Services: WithdrawalRecord
+        2. eSIM Funding: eSIMFundingRecord
+        3. XLM Treasury: XLMLiquidityFundingRecord
+        4. BaridiMob Funding Receipts: BaridiMobFundingReceipt
+        """
+        from ..models import (
+            WithdrawalRecord,
+            eSIMFundingRecord,
+            XLMLiquidityFundingRecord,
+            BaridiMobFundingReceipt,
+        )
+
+        consumed = set()
+
+        # 1. Game (WithdrawalRecord)
+        for field in ['p2p_order_id', 'binance_txid', 'binance_pay_id', 'supplier_pay_id', 'reference', 'g2bulk_transaction_id']:
+            values = WithdrawalRecord.objects.exclude(**{f"{field}__isnull": True}).exclude(**{field: ''}).values_list(field, flat=True)
+            for v in values:
+                if v:
+                    consumed.add(str(v).strip())
+
+        # 2. eSIM (eSIMFundingRecord)
+        for field in ['binance_p2p_order_id', 'binance_txid', 'bybit_txid', 'airalo_order_id', 'receipt_reference']:
+            values = eSIMFundingRecord.objects.exclude(**{f"{field}__isnull": True}).exclude(**{field: ''}).values_list(field, flat=True)
+            for v in values:
+                if v:
+                    consumed.add(str(v).strip())
+
+        # 3. XLM (XLMLiquidityFundingRecord)
+        for field in ['p2p_order_id', 'binance_withdrawal_id', 'stellar_tx_hash', 'receipt_reference']:
+            values = XLMLiquidityFundingRecord.objects.exclude(**{f"{field}__isnull": True}).exclude(**{field: ''}).values_list(field, flat=True)
+            for v in values:
+                if v:
+                    consumed.add(str(v).strip())
+
+        # Extract any Convert orders recorded in XLM notes
+        for note_txt in XLMLiquidityFundingRecord.objects.exclude(notes__isnull=True).exclude(notes='').values_list('notes', flat=True):
+            if note_txt and 'Convert' in note_txt:
+                import re
+                for m in re.finditer(r'Convert(?: Order)?\s*#?(\d+)', note_txt, re.IGNORECASE):
+                    consumed.add(m.group(1).strip())
+
+        # 4. BaridiMob Funding Receipts
+        for field in ['binance_order_id', 'reference']:
+            values = BaridiMobFundingReceipt.objects.exclude(**{f"{field}__isnull": True}).exclude(**{field: ''}).values_list(field, flat=True)
+            for v in values:
+                if v:
+                    consumed.add(str(v).strip())
+
+        return consumed
+
+    @classmethod
+    def check_binance_identifier_consumed(cls, identifier: str, exclude_module: str = None, exclude_id = None) -> dict:
+        """
+        Cross-Module Double Spending Lock:
+        Checks whether a candidate Binance identifier is already consumed in Game, eSIM, or XLM.
+        """
+        clean_id = str(identifier or '').strip()
+        if not clean_id or clean_id.upper().startswith('TEST-'):
+            return {'is_consumed': False}
+
+        from ..models import (
+            WithdrawalRecord,
+            eSIMFundingRecord,
+            XLMLiquidityFundingRecord,
+        )
+        from django.db.models import Q
+
+        # Check 1: Game (WithdrawalRecord)
+        game_qs = WithdrawalRecord.objects.filter(
+            Q(p2p_order_id=clean_id) |
+            Q(binance_txid=clean_id) |
+            Q(binance_pay_id=clean_id) |
+            Q(supplier_pay_id=clean_id) |
+            Q(g2bulk_transaction_id=clean_id)
+        )
+        if exclude_module == 'GAME' and exclude_id:
+            game_qs = game_qs.exclude(id=exclude_id)
+        game_match = game_qs.first()
+        if game_match:
+            return {
+                'is_consumed': True,
+                'module': 'GAME',
+                'record_id': game_match.id,
+                'record_title': game_match.title or f"Withdrawal #{game_match.id}",
+                'error_message': f"Binance identifier '{clean_id}' is already consumed in Game / Wholesale Withdrawal #{game_match.id} ({game_match.title}). Cross-module double spending is strictly prohibited.",
+            }
+
+        # Check 2: eSIM (eSIMFundingRecord)
+        esim_qs = eSIMFundingRecord.objects.filter(
+            Q(binance_p2p_order_id=clean_id) |
+            Q(binance_txid=clean_id) |
+            Q(bybit_txid=clean_id) |
+            Q(airalo_order_id=clean_id)
+        )
+        if exclude_module == 'ESIM' and exclude_id:
+            esim_qs = esim_qs.exclude(id=exclude_id)
+        esim_match = esim_qs.first()
+        if esim_match:
+            return {
+                'is_consumed': True,
+                'module': 'ESIM',
+                'record_id': esim_match.id,
+                'record_title': f"eSIM Refill #{esim_match.id}",
+                'error_message': f"Binance identifier '{clean_id}' is already consumed in eSIM Refill #{esim_match.id}. Cross-module double spending is strictly prohibited.",
+            }
+
+        # Check 3: XLM (XLMLiquidityFundingRecord)
+        xlm_qs = XLMLiquidityFundingRecord.objects.filter(
+            Q(p2p_order_id=clean_id) |
+            Q(binance_withdrawal_id=clean_id) |
+            Q(stellar_tx_hash=clean_id) |
+            Q(notes__icontains=clean_id)
+        )
+        if exclude_module == 'XLM' and exclude_id:
+            xlm_qs = xlm_qs.exclude(id=exclude_id)
+        xlm_match = xlm_qs.first()
+        if xlm_match:
+            return {
+                'is_consumed': True,
+                'module': 'XLM',
+                'record_id': xlm_match.id,
+                'record_title': xlm_match.cycle_reference,
+                'error_message': f"Binance identifier '{clean_id}' is already consumed in XLM Treasury Cycle #{xlm_match.cycle_reference}. Cross-module double spending is strictly prohibited.",
+            }
+
+        return {'is_consumed': False}
+
+
 

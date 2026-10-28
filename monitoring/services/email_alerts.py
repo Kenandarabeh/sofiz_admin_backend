@@ -119,7 +119,7 @@ Discrepancy: {sign}{discrepancy_val:,.2f} DZD
 
 RECONCILIATION SUMMARY:
 - Left Side (5 Operational Assets): {left_tot:,.2f} DZD
-  1. Compte G (BaridiMob Quota): {compte_g:,.2f} DZD
+  1. Digital Services Operational Account (BaridiMob Quota): {compte_g:,.2f} DZD
   2. 4 Game Collection Wallets: {wallets_tot:,.2f} DZT
   3. Games Collection & Withdrawal Wallet: {withdrawal_tot:,.2f} DZT
   4. G2Bulk Supplier: ${g2bulk_usd:,.2f} USD ({g2bulk_dzd:,.2f} DZD)
@@ -161,7 +161,7 @@ http://localhost:5172/game
                     </thead>
                     <tbody>
                         <tr style="border-bottom: 1px solid #f1f5f9;">
-                            <td style="padding: 8px 0; color: #334155;">1. Compte G (BaridiMob Ops Quota)</td>
+                            <td style="padding: 8px 0; color: #334155;">1. Digital Services Operational Account (BaridiMob Ops Quota)</td>
                             <td style="padding: 8px 0; text-align: right; font-family: monospace; font-weight: 600;">{compte_g:,.2f} DZD</td>
                         </tr>
                         <tr style="border-bottom: 1px solid #f1f5f9;">

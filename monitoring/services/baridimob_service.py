@@ -39,7 +39,7 @@ class BaridiMobService:
     @classmethod
     def sync_baridi_balance(cls, account_key: str = None, force_live: bool = False) -> dict:
         """
-        Calls Epay BaridiMob Financial API for 'game' (gaming Gaming Account) or 'facture' (Sihaam Bills).
+        Calls Epay BaridiMob Financial API for 'game' (gaming Digital Services Operational Account) or 'facture' (Sihaam Bills).
         Updates BaridiMobAccount in local database with real-time liquid balance.
         Includes fast-path caching (30s) and a cooldown mechanism on scraper failure.
         CRITICAL INSTITUTIONAL RULE: BaridiMob Card balance MUST NEVER be overwritten with ECCP postal balance.
@@ -64,7 +64,7 @@ class BaridiMobService:
             endpoint = f"{base_url}/financial/baridimob/game/balance/"
             default_label = "game"
             default_rip = "00799999001738866535"
-            default_name = "Gaming Operational Account"
+            default_name = "Digital Services Operational Account"
             system_type = SubSystemType.GAMING
         else:
             endpoint = f"{base_url}/financial/baridimob/facture/balance/"

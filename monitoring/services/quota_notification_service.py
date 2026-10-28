@@ -20,8 +20,8 @@ _LAST_NOTIFICATION_TIMES = {}
 
 
 SUBSYSTEM_LABELS = {
-    'GAMING': 'Gaming Working Quota (G2Bulk & Cards)',
-    'ESIM': 'eSIM Operational Quota (Airalo & Roaming)',
+    'GAMING': 'Gaming Working Quota (Digital Services & Cards)',
+    'ESIM': 'eSIM Operational Quota (eSIM Account & Roaming)',
     'UTILITY': 'Factures & National Utilities Quota (Sonelgaz/ADE/AT)',
     'FACTURE': 'Factures & National Utilities Quota (Sonelgaz/ADE/AT)',
     'FLEXY': 'Flexy Telecom Operational Pool (Shemsnet)',

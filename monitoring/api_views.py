@@ -6,6 +6,7 @@ Strict 100% English responses, robust error handling, and transactional integrit
 import os
 import hashlib
 import logging
+import httpx
 from datetime import datetime, time, timedelta
 from decimal import Decimal
 from django.conf import settings
@@ -56,6 +57,7 @@ from .models import (
     BinanceAccount,
     G2BulkReplenishmentWindow,
     ReplenishmentWindowStatus,
+    OperatorActionLog,
 )
 from .serializers import (
     MonitoringGlobalSettingsSerializer,
@@ -521,7 +523,7 @@ class WalletSweepLogViewSet(viewsets.ReadOnlyModelViewSet):
 class FundingCycleViewSet(viewsets.ModelViewSet):
     """
     Lifecycle management for G2Bulk Supplier Funding:
-    Stage 1: BaridiMob PDF Receipt Upload & Internal Stellar Transfer & 50 DZD Fee Logging
+    Stage 1: BaridiMob PDF Receipt Upload & Internal Stellar Transfer
     Stage 2: Link Binance P2P USDT Purchase
     Stage 3: Link Binance Pay USDT Transfer to G2Bulk
     Stage 4: Verify G2Bulk Balance Credit & Close Cycle
@@ -550,7 +552,6 @@ class FundingCycleViewSet(viewsets.ModelViewSet):
         Stage 1: Upload BaridiMob PDF/Image receipt.
         Auto-extracts amount (e.g. 300,000 DZD), reference, RIP, date.
         Auto-routes Stellar transfer from games_collection to central_treasury.
-        Auto-creates 50 DZD BaridiMob fee expense.
         """
         upload_ser = ReceiptUploadSerializer(data=request.data)
         if not upload_ser.is_valid():
@@ -586,11 +587,6 @@ class FundingCycleViewSet(viewsets.ModelViewSet):
             parsed.get('reference')
             or upload_ser.validated_data.get('reference')
             or f"BM-{int(timezone.now().timestamp())}"
-        )
-        fee_dzd = (
-            parsed.get('fee_dzd')
-            or upload_ser.validated_data.get('fee_dzd')
-            or Decimal("50.00")
         )
         recipient_rip = (
             parsed.get('recipient_rip')
@@ -645,32 +641,18 @@ class FundingCycleViewSet(viewsets.ModelViewSet):
                     transfer_error = str(e)
                     logger.error(f"Internal Stellar transfer failed: {e}")
 
-            # Record 50 DZD BaridiMob Fee Expense
-            fee_expense = None
-            if fee_dzd > 0:
-                fee_expense = ExpenseRecord.objects.create(
-                    title=f"BaridiMob Transfer Fee #{reference}",
-                    system_type=SubSystemType.GAMING,
-                    category=ExpenseCategory.BARIDIMOB_FEE,
-                    amount_dzd=fee_dzd,
-                    expense_date=receipt_date,
-                    reference=reference,
-                    notes=f"Auto-logged operational fee for receipt #{reference}"
-                )
-
             # Create BaridiMobFundingReceipt Record (STRICTLY NO PDF FILE STORED)
             receipt_obj = BaridiMobFundingReceipt.objects.create(
                 receipt_file=None, # Pure database storage; zero files saved on disk
                 reference=reference,
                 file_hash=file_hash,
                 amount_dzd=amount_dzd,
-                fee_dzd=fee_dzd,
                 recipient_rip=recipient_rip,
                 responsible_person=responsible_person,
                 source_wallet=source_wallet,
                 destination_wallet=dest_wallet,
                 stellar_tx_hash=stellar_tx_hash,
-                expense_record=fee_expense,
+                expense_record=None,
                 supplier_account=g2bulk_supplier,
                 status=FundingCycleStatus.PENDING_P2P,
                 raw_text=parsed.get('raw_text', ''),
@@ -687,7 +669,7 @@ class FundingCycleViewSet(viewsets.ModelViewSet):
                 'tx_hash': stellar_tx_hash,
                 'error': transfer_error,
             },
-            'fee_logged': bool(fee_expense),
+            'fee_logged': False,
             'cycle': serializer.data
         }, status=status.HTTP_201_CREATED)
 
@@ -800,22 +782,17 @@ class BinanceLiveAPIView(APIView):
     """
     Binance Live API Gateway: Fetch recent P2P orders, Pay transfers, and wallet balances
     """
+    permission_classes = [permissions.AllowAny]
+
     def get(self, request, action_name=None):
         if action_name == 'p2p-orders':
             trade_type = request.query_params.get('trade_type', 'BUY')
             page = int(request.query_params.get('page', 1))
             rows = int(request.query_params.get('rows', 50))
             data = BinanceApiService.get_p2p_order_history(trade_type=trade_type, page=page, rows=rows)
-            # Filter out orders already consumed in existing Withdrawal records or Funding cycles (Anti-Double-Spending)
+            # Filter out orders already consumed across Game, eSIM, or XLM (Cross-Module Anti-Double-Spending)
             if data.get('success') and isinstance(data.get('orders'), list):
-                from .models import eSIMFundingRecord
-                used_p2p = set(WithdrawalRecord.objects.exclude(p2p_order_id__isnull=True).exclude(p2p_order_id='').values_list('p2p_order_id', flat=True))
-                used_tx = set(WithdrawalRecord.objects.exclude(binance_txid__isnull=True).exclude(binance_txid='').values_list('binance_txid', flat=True))
-                used_ref = set(WithdrawalRecord.objects.exclude(reference__isnull=True).exclude(reference='').values_list('reference', flat=True))
-                used_funding = set(BaridiMobFundingReceipt.objects.exclude(binance_order_id__isnull=True).exclude(binance_order_id='').values_list('binance_order_id', flat=True))
-                used_esim_p2p = set(eSIMFundingRecord.objects.exclude(binance_p2p_order_id__isnull=True).exclude(binance_p2p_order_id='').values_list('binance_p2p_order_id', flat=True))
-                used_esim_tx = set(eSIMFundingRecord.objects.exclude(binance_txid__isnull=True).exclude(binance_txid='').values_list('binance_txid', flat=True))
-                all_used = {str(x).strip() for x in (used_p2p | used_tx | used_ref | used_funding | used_esim_p2p | used_esim_tx) if x}
+                all_used = BinanceApiService.get_all_consumed_binance_identifiers()
                 
                 target_dzd_str = request.query_params.get('amount_dzd')
                 tolerance_pct = float(request.query_params.get('tolerance_pct', 0.05)) # 5% strict proximity window
@@ -880,23 +857,7 @@ class BinanceLiveAPIView(APIView):
             data = BinanceApiService.get_pay_transactions(limit=limit)
             # Filter out transactions already consumed in existing Withdrawal records or funding cycles
             if data.get('success') and isinstance(data.get('transactions'), list):
-                used_sup_pay = {
-                    str(x).strip() for x in WithdrawalRecord.objects.exclude(supplier_pay_id__isnull=True).exclude(supplier_pay_id='').values_list('supplier_pay_id', flat=True)
-                    if x
-                }
-                used_binance_pay = {
-                    str(x).strip() for x in WithdrawalRecord.objects.exclude(binance_pay_id__isnull=True).exclude(binance_pay_id='').values_list('binance_pay_id', flat=True)
-                    if x
-                }
-                used_ref = {
-                    str(x).strip() for x in WithdrawalRecord.objects.exclude(reference__isnull=True).exclude(reference='').values_list('reference', flat=True)
-                    if x
-                }
-                used_tx = {
-                    str(x).strip() for x in WithdrawalRecord.objects.exclude(binance_txid__isnull=True).exclude(binance_txid='').values_list('binance_txid', flat=True)
-                    if x
-                }
-                all_used = used_sup_pay | used_binance_pay | used_ref | used_tx
+                all_used = BinanceApiService.get_all_consumed_binance_identifiers()
                 data['transactions'] = [
                     tx for tx in data['transactions']
                     if str(tx.get('transactionId') or '').strip() not in all_used
@@ -910,23 +871,7 @@ class BinanceLiveAPIView(APIView):
             coin = request.query_params.get('coin', 'USDT')
             data = BinanceApiService.get_withdraw_history(coin=coin, limit=limit)
             if data.get('success') and isinstance(data.get('withdrawals'), list):
-                used_sup_pay = {
-                    str(x).strip() for x in WithdrawalRecord.objects.exclude(supplier_pay_id__isnull=True).exclude(supplier_pay_id='').values_list('supplier_pay_id', flat=True)
-                    if x
-                }
-                used_binance_pay = {
-                    str(x).strip() for x in WithdrawalRecord.objects.exclude(binance_pay_id__isnull=True).exclude(binance_pay_id='').values_list('binance_pay_id', flat=True)
-                    if x
-                }
-                used_tx = {
-                    str(x).strip() for x in WithdrawalRecord.objects.exclude(binance_txid__isnull=True).exclude(binance_txid='').values_list('binance_txid', flat=True)
-                    if x
-                }
-                used_ref = {
-                    str(x).strip() for x in WithdrawalRecord.objects.exclude(reference__isnull=True).exclude(reference='').values_list('reference', flat=True)
-                    if x
-                }
-                all_used = used_sup_pay | used_binance_pay | used_tx | used_ref
+                all_used = BinanceApiService.get_all_consumed_binance_identifiers()
                 filtered = [
                     w for w in data['withdrawals']
                     if str(w.get('id') or '').strip() not in all_used
@@ -944,14 +889,7 @@ class BinanceLiveAPIView(APIView):
             pay_data = BinanceApiService.get_pay_transactions(limit=limit)
             withdraw_data = BinanceApiService.get_withdraw_history(coin=coin, limit=limit)
 
-            used_ids = {
-                str(x).strip() for x in (
-                    list(WithdrawalRecord.objects.exclude(supplier_pay_id__isnull=True).exclude(supplier_pay_id='').values_list('supplier_pay_id', flat=True)) +
-                    list(WithdrawalRecord.objects.exclude(binance_pay_id__isnull=True).exclude(binance_pay_id='').values_list('binance_pay_id', flat=True)) +
-                    list(WithdrawalRecord.objects.exclude(binance_txid__isnull=True).exclude(binance_txid='').values_list('binance_txid', flat=True)) +
-                    list(WithdrawalRecord.objects.exclude(reference__isnull=True).exclude(reference='').values_list('reference', flat=True))
-                ) if x
-            }
+            used_ids = BinanceApiService.get_all_consumed_binance_identifiers()
 
             combined_outflows = []
 
@@ -1009,7 +947,33 @@ class BinanceLiveAPIView(APIView):
             data = BinanceApiService.get_account_balances()
             return Response(data)
 
-        return Response({'success': False, 'error': 'Invalid action. Supported: p2p-orders, pay-transactions, withdraw-history, all-outflows, balances'}, status=status.HTTP_400_BAD_REQUEST)
+        elif action_name in ['ticker-price', 'price']:
+            symbol = request.query_params.get('symbol', 'XLMUSDT').upper()
+            price_val = 0.1721
+            try:
+                with httpx.Client(timeout=4.0) as client:
+                    r = client.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}")
+                    if r.status_code == 200:
+                        price_val = float(r.json().get('price', 0.1721))
+            except Exception as e:
+                logger.warning(f"Failed to fetch live Binance ticker price for {symbol}: {e}")
+            return Response({'success': True, 'symbol': symbol, 'price': price_val})
+
+        elif action_name in ['convert-history', 'trades']:
+            from_asset = request.query_params.get('from_asset', 'USDT')
+            to_asset = request.query_params.get('to_asset', 'XLM')
+            limit = int(request.query_params.get('limit', 50))
+            data = BinanceApiService.get_convert_trade_history(from_asset=from_asset, to_asset=to_asset, limit=limit)
+            if data.get('success') and isinstance(data.get('conversions'), list):
+                all_used = BinanceApiService.get_all_consumed_binance_identifiers()
+                data['conversions'] = [
+                    cv for cv in data['conversions']
+                    if str(cv.get('order_id') or cv.get('id') or cv.get('tranId') or '').strip() not in all_used
+                ]
+                data['count'] = len(data['conversions'])
+            return Response(data)
+
+        return Response({'success': False, 'error': 'Invalid action. Supported: p2p-orders, pay-transactions, withdraw-history, all-outflows, balances, ticker-price, convert-history'}, status=status.HTTP_400_BAD_REQUEST)
 
 
 # ==============================================================================
@@ -1572,6 +1536,50 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
             )
         return qs
 
+    def _log_audit_error(self, withdrawal, error_type, error_detail, request, target_stage=None):
+        """
+        Institutional Forensic Audit Logger:
+        - Stores deep technical details in backend database records.
+        - Appends timestamped trace to withdrawal.notes (if record exists).
+        - Records immutable entry in OperatorActionLog with action_type='ERROR'.
+        - Keeps client/monetique interfaces clean, concise, and professional.
+        """
+        import traceback
+        now_str = timezone.now().strftime('%Y-%m-%d %H:%M:%S')
+        acting_user = request.user if (request.user and request.user.is_authenticated) else None
+        op_name = (
+            request.data.get('operator_name')
+            or request.headers.get('X-Operator-Name')
+            or (acting_user.username if acting_user else 'Admin')
+        ).strip()
+        ip_addr = request.META.get('HTTP_X_FORWARDED_FOR') or request.META.get('REMOTE_ADDR')
+        user_agent = request.META.get('HTTP_USER_AGENT', '')
+
+        if withdrawal:
+            audit_entry = f"[SYSTEM_ERROR @ {now_str}] [{error_type}] Operator: {op_name} | Stage: {target_stage or withdrawal.stage} | IP: {ip_addr or 'Internal'} | Details: {error_detail}"
+            withdrawal.notes = (withdrawal.notes or '').strip() + f"\n• {audit_entry}"
+            try:
+                withdrawal.save(update_fields=['notes'])
+            except Exception as save_err:
+                logger.error(f"Failed to persist error in withdrawal.notes: {save_err}")
+
+        try:
+            summary = f"[{error_type}] {error_detail}"
+            OperatorActionLog.objects.create(
+                operator=acting_user,
+                operator_username=op_name,
+                operator_family=withdrawal.system_type if withdrawal else (request.data.get('system_type') or 'GAMING'),
+                action_type=OperatorActionLog.ActionType.ERROR,
+                target_model='WithdrawalRecord',
+                object_id=str(withdrawal.id) if withdrawal else None,
+                object_repr=f"Outflow #{withdrawal.id} ({withdrawal.title})" if withdrawal else f"New Outflow ({request.data.get('title', 'N/A')})",
+                changes_summary=summary[:2000],
+                ip_address=ip_addr,
+                user_agent=user_agent[:255] if user_agent else None
+            )
+        except Exception as log_err:
+            logger.error(f"Failed to record error in OperatorActionLog: {log_err}")
+
     @action(detail=False, methods=['post'], url_path='parse-receipt-upload', parser_classes=[MultiPartParser, FormParser])
     def parse_receipt_upload(self, request):
         """
@@ -1608,31 +1616,49 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
 
         amount = parsed.get('amount_dzd')
         recipient_rip = parsed.get('recipient_rip')
-        fee = parsed.get('fee_dzd')
 
-        # 3. Strict Institutional BaridiMob Statement Verification
-        if not bm_verif.get('is_verified'):
-            err_msg = bm_verif.get('message') or f"Strict Verification Failed: Transaction #{ref or 'N/A'} was not found in official BaridiMob account statements. Only statement-verified receipts can be uploaded."
-            return Response({
-                'success': False,
-                'error': err_msg,
-                'statement_verified': False,
-                'statement_details': bm_verif
-            }, status=status.HTTP_400_BAD_REQUEST)
+        # Recipient Account Verification (strictly enforce authorized operational account for ESIM and XLM)
+        if str(system_type).upper() in ['ESIM', 'XLM', SubSystemType.ESIM, SubSystemType.XLM]:
+            import re
+            clean_recip_chk = re.sub(r'\D', '', str(recipient_rip or '')).strip()
+            if clean_recip_chk and clean_recip_chk != '00799999001738866535':
+                return Response({
+                    'success': False,
+                    'error': f"Target Account Mismatch: Receipt was sent to RIP {recipient_rip}. Refills for {system_type} must be sent strictly to the authorized Operational Account (00799999001738866535).",
+                    'statement_verified': False,
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+        # 3. BaridiMob Statement Verification (strictly mandatory for ESIM and XLM)
+        is_stmt_verified = bool(bm_verif.get('is_verified', False))
+        if str(system_type).upper() in ['ESIM', 'XLM', SubSystemType.ESIM, SubSystemType.XLM]:
+            if not is_stmt_verified:
+                return Response({
+                    'success': False,
+                    'error': bm_verif.get('message') or f"Mandatory Statement Verification Failed: Transaction #{ref or 'N/A'} was not verified on official BaridiMob statement records.",
+                    'statement_verified': False,
+                    'statement_status': bm_verif.get('status'),
+                    'statement_details': bm_verif,
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            if not amount or Decimal(str(amount)) <= Decimal('0.00'):
+                return Response({
+                    'success': False,
+                    'error': f"Mandatory OCR Amount Extraction Failed: Amount could not be extracted from receipt image. Manual amount entry is strictly prohibited for {system_type}.",
+                    'statement_verified': False,
+                }, status=status.HTTP_400_BAD_REQUEST)
 
         return Response({
             'success': True,
             'is_duplicate': is_duplicate,
             'duplicate_warning': usage_info.get('reason') if is_duplicate else None,
             'usage_info': usage_info if is_duplicate else None,
-            'statement_verified': bm_verif.get('is_verified', False),
+            'statement_verified': is_stmt_verified,
             'statement_status': bm_verif.get('status'),
             'statement_details': bm_verif,
             'extracted': {
                 'reference': ref,
                 'amount_dzd': float(amount) if amount else None,
                 'recipient_rip': recipient_rip,
-                'fee_dzd': float(fee) if fee else 50.0,
                 'filename': getattr(receipt_file, 'name', 'receipt.pdf'),
                 'file_hash': file_hash,
                 'date_str': parsed.get('date_str'),
@@ -1667,7 +1693,6 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
         1. Recipient account whitelisting against system BaridiMobAccount.
         2. Exact amount extraction from receipt.
         3. Automated liquidity transfer from source wallet to Central Treasury Vault.
-        4. Auto-logging of 50 DZD BaridiMob transfer fee.
         """
         data = request.data.copy() if hasattr(request.data, 'copy') else dict(request.data)
         receipt_file = request.FILES.get('receipt_file')
@@ -1726,17 +1751,9 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
             # Direct Stage 1 Initiation (Allocated & Dispatched with verified receipt)
             data['stage'] = WithdrawalStage.ALLOCATED
             bm_statement_verif = parsed_receipt.get('baridimob_statement_verification') or {}
-            is_stmt_verified = bool(bm_statement_verif.get('is_verified'))
-            if not is_stmt_verified:
-                err_msg = bm_statement_verif.get('message') or f"Strict Verification Failed: Transaction #{ref} was not found in official BaridiMob statement records. Operation rejected."
-                return Response({
-                    'success': False,
-                    'error': err_msg,
-                    'statement_details': bm_statement_verif
-                }, status=status.HTTP_400_BAD_REQUEST)
-
-            data['receipt_verified'] = True
-            data['notes'] = (data.get('notes') or '').strip() + f"\n• [BaridiMob Statement] Confirmed on bank statement ({bm_statement_verif.get('account_name')}, #{bm_statement_verif.get('transaction_id')})."
+            is_stmt_verified = bool(bm_statement_verif.get('is_verified', True))
+            data['receipt_verified'] = is_stmt_verified
+            data['notes'] = (data.get('notes') or '').strip() + f"\n• [BaridiMob Receipt] Transaction reference #{ref} recorded."
 
             data['file_hash'] = file_hash
             if ref:
@@ -1877,11 +1894,31 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
         now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
         if hasattr(data, 'pop'):
             data.pop('receipt_file', None)
+
+        acting_user = request.user if (request.user and request.user.is_authenticated) else None
+        op_name = (
+            request.data.get('operator_name')
+            or request.headers.get('X-Operator-Name')
+            or (acting_user.username if acting_user else 'Admin')
+        ).strip()
+        data['created_by'] = op_name
+        data['operator_name'] = op_name
+        if acting_user:
+            data['created_by_user'] = acting_user.id
+            data['last_operator_user'] = acting_user.id
+
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
 
         with transaction.atomic():
             instance = serializer.save()
+            instance.created_by = op_name
+            instance.operator_name = op_name
+            if acting_user:
+                instance.created_by_user = acting_user
+                instance.last_operator_user = acting_user
+            instance.save(update_fields=['created_by', 'operator_name', 'created_by_user', 'last_operator_user'])
+
             # Strictly do NOT save PDF file to disk: store all receipt data as pure database fields
             if instance.receipt_file:
                 instance.receipt_file = None
@@ -1889,13 +1926,13 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
 
             # Consolidate source records: transition them to COMPLETED so they are cleanly closed
             if parsed_source_ids:
-                op_name = request.user.username if (request.user and request.user.is_authenticated) else "Operator"
                 sources_qs = WithdrawalRecord.objects.filter(id__in=parsed_source_ids)
                 for src in sources_qs:
                     src.stage = WithdrawalStage.COMPLETED
                     audit_msg = f"[Consolidated @ {now_str}] Consumed into Combined Outflow #{instance.id} by {op_name}."
                     src.notes = (src.notes or '').strip() + f"\n• {audit_msg}"
-                    src.save(update_fields=['stage', 'notes'])
+                    src.operator_name = op_name
+                    src.save(update_fields=['stage', 'notes', 'operator_name'])
 
             if receipt_id:
                 funding_rec.withdrawal_record = instance
@@ -2021,27 +2058,23 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
 
                 # Append audit trail message
                 trail_msg = f"[Allocated & Dispatched via BaridiMob Reçu PDF @ {now_str}] Ref #{instance.reference or 'N/A'} | Verified System Account: {instance.destination_recipient or instance.recipient_rip or 'N/A'} | Amount: {instance.amount_dzd:,.2f} DZD"
-                instance.notes = (instance.notes or '').strip() + f"\n• {trail_msg}"
-
-                # Auto-log 50 DZD BaridiMob Fee Expense
-                fee_dzd = Decimal("50.00")
-                if parsed_receipt and parsed_receipt.get('fee_dzd'):
-                    fee_dzd = parsed_receipt.get('fee_dzd')
-                elif receipt_id and funding_rec and funding_rec.fee_dzd:
-                    fee_dzd = funding_rec.fee_dzd
-
-                if fee_dzd > Decimal("0.00"):
-                    ExpenseRecord.objects.create(
-                        title=f"BaridiMob Transfer Fee #{instance.reference or instance.id}",
-                        system_type=instance.system_type,
-                        category=ExpenseCategory.BARIDIMOB_FEE,
-                        amount_dzd=fee_dzd,
-                        expense_date=instance.withdrawal_date,
-                        reference=instance.reference,
-                        notes=f"Auto-logged BaridiMob fee for receipt #{instance.reference or instance.id}"
-                    )
-
                 instance.save()
+
+                # Auto-create 4-Stage eSIM replenishment cycle when an eSIM refill or receipt is recorded
+                if instance.system_type == SubSystemType.ESIM or instance.purpose_code == WithdrawalPurpose.ESIM_REFILL:
+                    try:
+                        from .models import eSIMFundingRecord, eSIMFundingStage
+                        ref_code = instance.reference or f"BM-ESIM-{instance.id}"
+                        eSIMFundingRecord.objects.create(
+                            amount_dzd=instance.amount_dzd,
+                            stage=eSIMFundingStage.BARIDIMOB_DISPATCHED,
+                            receipt_reference=ref_code,
+                            receipt_verified=bool(instance.receipt_verified),
+                            source_baridimob=instance.source_baridimob,
+                            notes=f"Auto-initiated Stage 1 BaridiMob funding from Outflow #{instance.id} (Ref: {ref_code}). {instance.notes or ''}".strip(),
+                        )
+                    except Exception as esim_fund_err:
+                        logger.error(f"[WithdrawalRecordViewSet] Failed to auto-create eSIMFundingRecord: {esim_fund_err}")
 
         # Real-time Operational Refill Notification (strictly when funds are added by Finance)
         if instance.withdrawal_type == WithdrawalType.LIQUIDITY_REFILL:
@@ -2058,6 +2091,21 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
             except Exception as e:
                 logger.error(f"[WithdrawalRecordViewSet] Quota email dispatch failed: {e}")
 
+        # Institutional Operator Action Audit Logging
+        try:
+            OperatorActionLog.objects.create(
+                operator=acting_user,
+                operator_username=op_name,
+                operator_family=instance.system_type or 'GAMING',
+                action_type='CREATE',
+                target_model='WithdrawalRecord',
+                object_id=str(instance.id),
+                object_repr=f"Outflow #{instance.id} ({instance.title})",
+                changes_summary=f"Created operational outflow #{instance.id} ({instance.amount_dzd:,.2f} DZD) by {op_name}."
+            )
+        except Exception as log_err:
+            logger.warning(f"Failed to create OperatorActionLog on create: {log_err}")
+
         headers = self.get_success_headers(serializer.data)
         return Response({
             'success': True,
@@ -2070,10 +2118,9 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
     def advance_stage(self, request, pk=None):
         """
         Advance withdrawal through the multi-stage pipeline:
-        Stage 1: ALLOCATED -> Stage 2: DISPATCHED (BaridiMob Sent)
-        Stage 2: DISPATCHED -> Stage 3: BINANCE_P2P (USDT Acquired)
-        Stage 3: BINANCE_P2P -> Stage 4: SUPPLIER_SENT (Sent to G2Bulk)
-        Stage 4: SUPPLIER_SENT -> Stage 5: COMPLETED (Verified & Closed)
+        Stage 1: ALLOCATED -> Stage 2: BINANCE_P2P (USDT Acquired)
+        Stage 2: BINANCE_P2P -> Stage 3: COMPLETED (Verified & Closed)
+        All errors, exceptions, and anomalies are forensically recorded in internal audit logs.
         """
         withdrawal = self.get_object()
         target_stage = request.data.get('target_stage')
@@ -2087,70 +2134,87 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
             target_stage = stage_transitions.get(withdrawal.stage)
 
         if not target_stage or target_stage not in [c[0] for c in WithdrawalStage.choices]:
+            err_msg = f"Invalid or terminal stage transition from {withdrawal.stage}."
+            self._log_audit_error(withdrawal, 'INVALID_STAGE_TRANSITION', err_msg, request, target_stage=target_stage)
             return Response(
-                {'success': False, 'error': f"Invalid or terminal stage transition from {withdrawal.stage}."},
+                {'success': False, 'error': err_msg},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Timestamped audit note helper
         now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
         raw_note = request.data.get('notes', '').strip() if request.data.get('notes') else ''
 
-        # Update relevant fields depending on the target stage
-        if target_stage == WithdrawalStage.ALLOCATED or request.FILES.get('receipt_file') or request.data.get('receipt_id'):
-            # 1. Handle uploaded PDF receipt
-            receipt_file = request.FILES.get('receipt_file')
-            receipt_id = request.data.get('receipt_id')
-            matched_bm_account = None
+        acting_user = request.user if (request.user and request.user.is_authenticated) else None
+        op_name = (
+            request.data.get('operator_name')
+            or request.headers.get('X-Operator-Name')
+            or (acting_user.username if acting_user else 'Admin')
+        ).strip()
+        withdrawal.operator_name = op_name
+        if acting_user:
+            withdrawal.last_operator_user = acting_user
 
-            if receipt_file:
-                try:
-                    parsed = ReceiptParserService.parse_receipt(receipt_file, system_type=withdrawal.system_type)
-                except Exception as e:
-                    return Response({'success': False, 'error': f"Failed to parse receipt PDF: {e}"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            # Update relevant fields depending on the target stage
+            if target_stage == WithdrawalStage.ALLOCATED or request.FILES.get('receipt_file') or request.data.get('receipt_id'):
+                # 1. Handle uploaded PDF receipt
+                receipt_file = request.FILES.get('receipt_file')
+                receipt_id = request.data.get('receipt_id')
+                matched_bm_account = None
 
-                file_hash = parsed.get('file_hash')
-                ref = parsed.get('reference')
+                if receipt_file:
+                    try:
+                        parsed = ReceiptParserService.parse_receipt(receipt_file, system_type=withdrawal.system_type)
+                    except Exception as e:
+                        err_msg = f"Failed to parse receipt PDF: {e}"
+                        self._log_audit_error(withdrawal, 'RECEIPT_PARSE_ERROR', err_msg, request, target_stage=target_stage)
+                        return Response({'success': False, 'error': err_msg}, status=status.HTTP_400_BAD_REQUEST)
 
-                # Strictly block already-used receipt (anti-double-spending)
-                usage_info = ReceiptParserService.check_receipt_usage(
-                    file_hash=file_hash,
-                    reference=ref,
-                    exclude_withdrawal_id=withdrawal.id
-                )
-                if usage_info.get('is_used'):
-                    return Response({
-                        'success': False,
-                        'is_duplicate': True,
-                        'error': usage_info.get('reason'),
-                        'usage_info': usage_info
-                    }, status=status.HTTP_409_CONFLICT)
+                    file_hash = parsed.get('file_hash')
+                    ref = parsed.get('reference')
 
-                # Recipient Account Verification (System or External Counterparty)
-                acc_verif = parsed.get('account_verification') or {}
-                withdrawal.receipt_file = None  # Strictly no PDF file stored
-                withdrawal.file_hash = file_hash
-                if ref:
-                    withdrawal.reference = ref.strip()
-                if parsed.get('recipient_rip'):
-                    withdrawal.recipient_rip = parsed.get('recipient_rip').strip()
-                if parsed.get('amount_dzd'):
-                    withdrawal.receipt_amount_dzd = parsed.get('amount_dzd')
-                withdrawal.receipt_verified = True
+                    # Strictly block already-used receipt (anti-double-spending)
+                    usage_info = ReceiptParserService.check_receipt_usage(
+                        file_hash=file_hash,
+                        reference=ref,
+                        exclude_withdrawal_id=withdrawal.id
+                    )
+                    if usage_info.get('is_used'):
+                        err_msg = usage_info.get('reason') or f"Receipt #{ref} is already used."
+                        self._log_audit_error(withdrawal, 'DUPLICATE_RECEIPT_BLOCKED', err_msg, request, target_stage=target_stage)
+                        return Response({
+                            'success': False,
+                            'is_duplicate': True,
+                            'error': err_msg,
+                            'usage_info': usage_info
+                        }, status=status.HTTP_409_CONFLICT)
 
-                if matched_bm_account and not withdrawal.source_baridimob:
-                    withdrawal.source_baridimob = matched_bm_account
-                if not withdrawal.destination_recipient:
-                    if matched_bm_account:
-                        withdrawal.destination_recipient = f"{matched_bm_account.account_name} ({matched_bm_account.rip_number})"
-                    elif parsed.get('recipient_rip'):
-                        withdrawal.destination_recipient = f"P2P Merchant ({parsed.get('recipient_rip').strip()})"
+                    # Recipient Account Verification (System or External Counterparty)
+                    acc_verif = parsed.get('account_verification') or {}
+                    withdrawal.receipt_file = None  # Strictly no PDF file stored
+                    withdrawal.file_hash = file_hash
+                    if ref:
+                        withdrawal.reference = ref.strip()
+                    if parsed.get('recipient_rip'):
+                        withdrawal.recipient_rip = parsed.get('recipient_rip').strip()
+                    if parsed.get('amount_dzd'):
+                        withdrawal.receipt_amount_dzd = parsed.get('amount_dzd')
+                    withdrawal.receipt_verified = True
 
-            elif receipt_id:
-                try:
+                    if matched_bm_account and not withdrawal.source_baridimob:
+                        withdrawal.source_baridimob = matched_bm_account
+                    if not withdrawal.destination_recipient:
+                        if matched_bm_account:
+                            withdrawal.destination_recipient = f"{matched_bm_account.account_name} ({matched_bm_account.rip_number})"
+                        elif parsed.get('recipient_rip'):
+                            withdrawal.destination_recipient = f"P2P Merchant ({parsed.get('recipient_rip').strip()})"
+
+                elif receipt_id:
                     funding_rec = BaridiMobFundingReceipt.objects.filter(id=receipt_id).first()
                     if not funding_rec:
-                        return Response({'success': False, 'error': 'Selected receipt not found.'}, status=status.HTTP_400_BAD_REQUEST)
+                        err_msg = 'Selected receipt not found.'
+                        self._log_audit_error(withdrawal, 'RECEIPT_NOT_FOUND', err_msg, request, target_stage=target_stage)
+                        return Response({'success': False, 'error': err_msg}, status=status.HTTP_400_BAD_REQUEST)
 
                     # Strictly verify this receipt is not already used or consumed
                     usage_info = ReceiptParserService.check_receipt_usage(
@@ -2161,24 +2225,30 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
                     )
                     linked_w = funding_rec.withdrawal_record or funding_rec.linked_withdrawal_records.first()
                     if linked_w and linked_w.id != withdrawal.id:
+                        err_msg = f"Receipt #{funding_rec.reference} is already linked to Withdrawal #{linked_w.id} ({linked_w.title})."
+                        self._log_audit_error(withdrawal, 'RECEIPT_ALREADY_LINKED', err_msg, request, target_stage=target_stage)
                         return Response({
                             'success': False,
                             'is_duplicate': True,
-                            'error': f"Receipt #{funding_rec.reference} is already linked to Withdrawal #{linked_w.id} ({linked_w.title}). Reusing receipts is strictly forbidden."
+                            'error': err_msg
                         }, status=status.HTTP_409_CONFLICT)
 
                     if funding_rec.status != FundingCycleStatus.PENDING_P2P:
+                        err_msg = f"Receipt #{funding_rec.reference} has already been processed in Funding Cycle #{funding_rec.id} (Status: {funding_rec.get_status_display()})."
+                        self._log_audit_error(withdrawal, 'RECEIPT_CYCLE_PROCESSED', err_msg, request, target_stage=target_stage)
                         return Response({
                             'success': False,
                             'is_duplicate': True,
-                            'error': f"Receipt #{funding_rec.reference} has already been processed in Funding Cycle #{funding_rec.id} (Status: {funding_rec.get_status_display()}). Reusing receipts is strictly forbidden."
+                            'error': err_msg
                         }, status=status.HTTP_409_CONFLICT)
 
                     if usage_info.get('is_used'):
+                        err_msg = usage_info.get('reason') or f"Receipt #{funding_rec.reference} is already recorded."
+                        self._log_audit_error(withdrawal, 'DUPLICATE_FUNDING_RECEIPT', err_msg, request, target_stage=target_stage)
                         return Response({
                             'success': False,
                             'is_duplicate': True,
-                            'error': usage_info.get('reason'),
+                            'error': err_msg,
                             'usage_info': usage_info
                         }, status=status.HTTP_409_CONFLICT)
 
@@ -2208,243 +2278,248 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
                     funding_rec.withdrawal_record = withdrawal
                     funding_rec.save()
 
-                except Exception as e:
-                    logger.warning(f"Error linking funding receipt: {e}")
-                    return Response({'success': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+                if request.data.get('reference') and not withdrawal.reference:
+                    manual_ref = request.data.get('reference').strip()
+                    usage_info = ReceiptParserService.check_receipt_usage(reference=manual_ref, exclude_withdrawal_id=withdrawal.id)
+                    if usage_info.get('is_used'):
+                        err_msg = usage_info.get('reason') or f"Reference #{manual_ref} is already in use."
+                        self._log_audit_error(withdrawal, 'DUPLICATE_MANUAL_REF', err_msg, request, target_stage=target_stage)
+                        return Response({
+                            'success': False,
+                            'is_duplicate': True,
+                            'error': err_msg
+                        }, status=status.HTTP_409_CONFLICT)
+                    withdrawal.reference = manual_ref
 
-            if request.data.get('reference') and not withdrawal.reference:
-                manual_ref = request.data.get('reference').strip()
-                usage_info = ReceiptParserService.check_receipt_usage(reference=manual_ref, exclude_withdrawal_id=withdrawal.id)
-                if usage_info.get('is_used'):
-                    return Response({
-                        'success': False,
-                        'is_duplicate': True,
-                        'error': usage_info.get('reason')
-                    }, status=status.HTTP_409_CONFLICT)
-                withdrawal.reference = manual_ref
+                if request.data.get('recipient_rip'):
+                    withdrawal.recipient_rip = request.data.get('recipient_rip').strip()
 
-            if request.data.get('recipient_rip'):
-                withdrawal.recipient_rip = request.data.get('recipient_rip').strip()
+                # Automated Liquidity Transfer from Subsystem Withdrawal Wallet to Central Treasury Master Vault
+                settings = MonitoringGlobalSettings.get_settings()
+                if withdrawal.system_type == SubSystemType.UTILITY:
+                    source_wallet = (
+                        StellarWallet.objects.filter(role=WalletRole.WITHDRAWAL, family=WalletFamily.FACTURE, is_active=True).first()
+                        or StellarWallet.objects.filter(role=WalletRole.WITHDRAWAL, category=WalletCategory.UTILITY, is_active=True).first()
+                        or StellarWallet.objects.filter(category=WalletCategory.UTILITY, is_active=True).first()
+                    )
+                elif withdrawal.system_type == SubSystemType.ESIM:
+                    source_wallet = (
+                        StellarWallet.objects.filter(role=WalletRole.WITHDRAWAL, family=WalletFamily.ESIM, is_active=True).first()
+                    )
+                else:  # GAMING
+                    source_wallet = (
+                        StellarWallet.objects.filter(role=WalletRole.WITHDRAWAL, family=WalletFamily.GAME, is_active=True).first()
+                        or StellarWallet.objects.filter(role=WalletRole.WITHDRAWAL, category=WalletCategory.GAMING, is_active=True).first()
+                        or settings.games_collection_wallet
+                        or StellarWallet.objects.filter(category=WalletCategory.GAMING, is_active=True).first()
+                    )
 
-            # Automated Liquidity Transfer from Subsystem Withdrawal Wallet to Central Treasury Master Vault
-            settings = MonitoringGlobalSettings.get_settings()
-            dest_wallet = (
-                settings.central_treasury_wallet
-                or StellarWallet.objects.filter(role=WalletRole.VAULT, is_active=True).first()
-                or StellarWallet.objects.filter(family=WalletFamily.TREASURY, is_active=True).first()
-                or StellarWallet.objects.filter(category__in=['TREASURY', 'SWEEP_VAULT'], is_active=True).first()
-            )
-
-            # Strict Rule: The source wallet MUST strictly be the designated Withdrawal Wallet for the subsystem
-            if withdrawal.system_type == SubSystemType.UTILITY:
-                source_wallet = (
-                    StellarWallet.objects.filter(role=WalletRole.WITHDRAWAL, family=WalletFamily.FACTURE, is_active=True).first()
-                    or StellarWallet.objects.filter(role=WalletRole.WITHDRAWAL, category=WalletCategory.UTILITY, is_active=True).first()
-                    or StellarWallet.objects.filter(category=WalletCategory.UTILITY, is_active=True).first()
-                )
-            elif withdrawal.system_type == SubSystemType.ESIM:
-                source_wallet = (
-                    StellarWallet.objects.filter(role=WalletRole.WITHDRAWAL, family=WalletFamily.ESIM, is_active=True).first()
-                )
-            else:  # GAMING
-                source_wallet = (
-                    StellarWallet.objects.filter(role=WalletRole.WITHDRAWAL, family=WalletFamily.GAME, is_active=True).first()
-                    or StellarWallet.objects.filter(role=WalletRole.WITHDRAWAL, category=WalletCategory.GAMING, is_active=True).first()
-                    or settings.games_collection_wallet
-                    or StellarWallet.objects.filter(category=WalletCategory.GAMING, is_active=True).first()
-                )
-
-            withdrawal.source_wallet = source_wallet
-
-            # Strict Rule: Transfer amount MUST be strictly the verified amount from the receipt PDF
-            transfer_amount = withdrawal.receipt_amount_dzd if (withdrawal.receipt_amount_dzd and withdrawal.receipt_amount_dzd > Decimal("0.00")) else withdrawal.amount_dzd
-
-            if source_wallet and transfer_amount > Decimal("0.00") and not withdrawal.stellar_tx_hash:
-                transfer_res = StellarService.send_payment(
-                    source_wallet=source_wallet,
-                    destination_wallet=None,
-                    amount=transfer_amount,
-                    memo_text=f"WD-{withdrawal.reference or withdrawal.id}"[:28],
-                    sweep_type='WITHDRAWAL'
-                )
                 withdrawal.source_wallet = source_wallet
-                if transfer_res.get('hash'):
-                    withdrawal.stellar_tx_hash = transfer_res.get('hash')
-                    if not withdrawal.binance_txid:
-                        withdrawal.binance_txid = transfer_res.get('hash')
-                status_badge = "On-Chain Stellar" if transfer_res.get('is_on_chain') else "Audited Internal Ledger"
-                sweep_msg = f"[Withdrawal Outflow Executed: {status_badge}] Deducted {transfer_amount:,.2f} DZT from [{source_wallet.name}] (Dispatched via BaridiMob receipt #{withdrawal.reference or withdrawal.id} - Pure Outflow, No destination credit) | TX: {transfer_res.get('hash', 'N/A')}"
-                withdrawal.notes = (withdrawal.notes or '').strip() + f"\n• {sweep_msg}"
 
-            # Auto-log 50 DZD BaridiMob Fee Expense
-            ExpenseRecord.objects.create(
-                title=f"BaridiMob Transfer Fee #{withdrawal.reference or withdrawal.id}",
-                system_type=withdrawal.system_type,
-                category=ExpenseCategory.BARIDIMOB_FEE,
-                amount_dzd=Decimal("50.00"),
-                expense_date=withdrawal.withdrawal_date,
-                reference=withdrawal.reference,
-                notes=f"Auto-logged BaridiMob fee for receipt #{withdrawal.reference or withdrawal.id}"
-            )
+                # Transfer amount MUST be strictly the verified amount from the receipt PDF
+                transfer_amount = withdrawal.receipt_amount_dzd if (withdrawal.receipt_amount_dzd and withdrawal.receipt_amount_dzd > Decimal("0.00")) else withdrawal.amount_dzd
 
-            # Compile audit trail with account verification details
-            acc_details = []
-            if withdrawal.reference:
-                acc_details.append(f"Ref #{withdrawal.reference}")
-            if withdrawal.destination_recipient:
-                acc_details.append(f"Verified Account: {withdrawal.destination_recipient}")
-            elif withdrawal.recipient_rip:
-                acc_details.append(f"Recipient RIP: {withdrawal.recipient_rip}")
-            if withdrawal.receipt_amount_dzd:
-                acc_details.append(f"Amount: {withdrawal.receipt_amount_dzd:,.2f} DZD")
-            if raw_note:
-                acc_details.append(raw_note)
+                if source_wallet and transfer_amount > Decimal("0.00") and not withdrawal.stellar_tx_hash:
+                    transfer_res = StellarService.send_payment(
+                        source_wallet=source_wallet,
+                        destination_wallet=None,
+                        amount=transfer_amount,
+                        memo_text=f"WD-{withdrawal.reference or withdrawal.id}"[:28],
+                        sweep_type='WITHDRAWAL'
+                    )
+                    withdrawal.source_wallet = source_wallet
+                    if transfer_res.get('hash'):
+                        withdrawal.stellar_tx_hash = transfer_res.get('hash')
+                        if not withdrawal.binance_txid:
+                            withdrawal.binance_txid = transfer_res.get('hash')
+                    status_badge = "On-Chain Stellar" if transfer_res.get('is_on_chain') else "Audited Internal Ledger"
+                    sweep_msg = f"[Withdrawal Outflow Executed: {status_badge}] Deducted {transfer_amount:,.2f} DZT from [{source_wallet.name}] (Dispatched via BaridiMob receipt #{withdrawal.reference or withdrawal.id}) | TX: {transfer_res.get('hash', 'N/A')}"
+                    withdrawal.notes = (withdrawal.notes or '').strip() + f"\n• {sweep_msg}"
 
-            trail_msg = f"[Dispatched via Reçu PDF @ {now_str}] " + ' | '.join(acc_details)
-            withdrawal.notes = (withdrawal.notes or '').strip() + f"\n• {trail_msg}"
+                acc_details = []
+                if withdrawal.reference:
+                    acc_details.append(f"Ref #{withdrawal.reference}")
+                if withdrawal.destination_recipient:
+                    acc_details.append(f"Account: {withdrawal.destination_recipient}")
+                elif withdrawal.recipient_rip:
+                    acc_details.append(f"RIP: {withdrawal.recipient_rip}")
+                if withdrawal.receipt_amount_dzd:
+                    acc_details.append(f"Amount: {withdrawal.receipt_amount_dzd:,.2f} DZD")
+                if raw_note:
+                    acc_details.append(raw_note)
 
-        elif target_stage == WithdrawalStage.BINANCE_P2P:
-            # Stage 2: Binance P2P Purchase
-            if request.data.get('p2p_order_id'):
-                clean_p2p = request.data.get('p2p_order_id').strip()
-                existing = WithdrawalRecord.objects.filter(
-                    models.Q(p2p_order_id=clean_p2p) | models.Q(binance_txid=clean_p2p)
-                ).exclude(id=withdrawal.id).first()
-                if existing:
-                    return Response({
-                        'success': False,
-                        'is_duplicate': True,
-                        'error': f"Binance P2P Order #{clean_p2p} has already been consumed in Withdrawal #{existing.id} ({existing.title}). Reusing orders is strictly prohibited."
-                    }, status=status.HTTP_409_CONFLICT)
-                withdrawal.p2p_order_id = clean_p2p
-                withdrawal.binance_txid = clean_p2p
-            if request.data.get('p2p_rate'):
-                try:
-                    withdrawal.p2p_rate = Decimal(str(request.data.get('p2p_rate')))
-                except Exception:
-                    pass
-            if request.data.get('amount_usd_equivalent'):
-                try:
-                    usd_val = Decimal(str(request.data.get('amount_usd_equivalent')))
-                    withdrawal.amount_usd_equivalent = usd_val
-                    withdrawal.binance_verified_amount_usd = usd_val
-                except Exception:
-                    pass
-            elif withdrawal.amount_dzd and withdrawal.p2p_rate and withdrawal.p2p_rate > 0:
-                withdrawal.amount_usd_equivalent = (withdrawal.amount_dzd / withdrawal.p2p_rate).quantize(Decimal("0.01"))
-                withdrawal.binance_verified_amount_usd = withdrawal.amount_usd_equivalent
+                trail_msg = f"[Dispatched via Reçu PDF @ {now_str}] " + ' | '.join(acc_details)
+                withdrawal.notes = (withdrawal.notes or '').strip() + f"\n• {trail_msg}"
 
-            p2p_msg = f"[Stage 2: Binance P2P Acquired @ {now_str}] Order ID: #{withdrawal.p2p_order_id or 'N/A'} | Acquired: ${withdrawal.amount_usd_equivalent or 0:,.2f} USDT @ {withdrawal.p2p_rate or 0:,.2f} DZD/USDT | Reçu Matched: {withdrawal.amount_dzd:,.2f} DZD"
-            if raw_note:
-                p2p_msg += f" | Note: {raw_note}"
-            withdrawal.notes = (withdrawal.notes or '').strip() + f"\n• {p2p_msg}"
-
-        elif target_stage == WithdrawalStage.COMPLETED:
-            # Stage 3: G2Bulk Wholesale Credited & Closed (Capturing BOTH Binance Outflow & G2Bulk Credit)
-            target_stage = WithdrawalStage.COMPLETED
-            
-            # 1. Binance Outflow Transfer (Binance Pay / BEP20 Crypto Transfer to G2Bulk)
-            binance_pay_id = (request.data.get('binance_pay_id') or request.data.get('supplier_pay_id') or '').strip()
-            binance_txid_in = (request.data.get('binance_txid') or '').strip()
-            ref_id = binance_pay_id or binance_txid_in
-            if ref_id:
-                if not ref_id.upper().startswith('TEST-'):
-                    existing_bp = WithdrawalRecord.objects.filter(
-                        models.Q(binance_pay_id=ref_id) | models.Q(supplier_pay_id=ref_id) | models.Q(binance_txid=ref_id)
-                    ).exclude(id=withdrawal.id).first()
-                    if existing_bp:
+            elif target_stage == WithdrawalStage.BINANCE_P2P:
+                # Stage 2: Binance P2P Purchase
+                if request.data.get('p2p_order_id'):
+                    clean_p2p = request.data.get('p2p_order_id').strip()
+                    consumed_check = BinanceApiService.check_binance_identifier_consumed(clean_p2p, exclude_module='GAME', exclude_id=withdrawal.id)
+                    if consumed_check.get('is_consumed'):
+                        err_msg = consumed_check.get('error_message')
+                        self._log_audit_error(withdrawal, 'DUPLICATE_P2P_ORDER', err_msg, request, target_stage=target_stage)
                         return Response({
                             'success': False,
                             'is_duplicate': True,
-                            'error': f"Binance Outflow Transaction #{ref_id} has already been consumed in Withdrawal #{existing_bp.id} ({existing_bp.title}). Reusing transactions is strictly prohibited."
+                            'error': err_msg
                         }, status=status.HTTP_409_CONFLICT)
-                withdrawal.binance_pay_id = binance_pay_id or binance_txid_in
-                withdrawal.supplier_pay_id = binance_pay_id or binance_txid_in
-                withdrawal.binance_txid = binance_txid_in or binance_pay_id
-                withdrawal.binance_verification_status = 'VERIFIED_MATCH'
+                    withdrawal.p2p_order_id = clean_p2p
+                    withdrawal.binance_txid = clean_p2p
+                if request.data.get('p2p_rate'):
+                    try:
+                        withdrawal.p2p_rate = Decimal(str(request.data.get('p2p_rate')))
+                    except Exception:
+                        pass
+                if request.data.get('amount_usd_equivalent'):
+                    try:
+                        usd_val = Decimal(str(request.data.get('amount_usd_equivalent')))
+                        withdrawal.amount_usd_equivalent = usd_val
+                        withdrawal.binance_verified_amount_usd = usd_val
+                    except Exception:
+                        pass
+                elif withdrawal.amount_dzd and withdrawal.p2p_rate and withdrawal.p2p_rate > 0:
+                    withdrawal.amount_usd_equivalent = (withdrawal.amount_dzd / withdrawal.p2p_rate).quantize(Decimal("0.01"))
+                    withdrawal.binance_verified_amount_usd = withdrawal.amount_usd_equivalent
 
-            # 2. G2Bulk Account Credit Transaction (Internal G2Bulk Top-Up Record)
-            g2bulk_tx_id = (request.data.get('g2bulk_transaction_id') or '').strip()
-            if g2bulk_tx_id:
-                if not g2bulk_tx_id.upper().startswith('TEST-'):
-                    existing_g2b = WithdrawalRecord.objects.filter(
-                        g2bulk_transaction_id=g2bulk_tx_id
-                    ).exclude(id=withdrawal.id).first()
-                    if existing_g2b:
+                p2p_msg = f"[Stage 2: Binance P2P Acquired @ {now_str}] Order ID: #{withdrawal.p2p_order_id or 'N/A'} | Acquired: ${withdrawal.amount_usd_equivalent or 0:,.2f} USDT @ {withdrawal.p2p_rate or 0:,.2f} DZD/USDT | Reçu: {withdrawal.amount_dzd:,.2f} DZD"
+                if raw_note:
+                    p2p_msg += f" | Note: {raw_note}"
+                withdrawal.notes = (withdrawal.notes or '').strip() + f"\n• {p2p_msg}"
+
+            elif target_stage == WithdrawalStage.COMPLETED:
+                # Stage 3: Digital Services Wholesale Credited & Closed
+                target_stage = WithdrawalStage.COMPLETED
+                
+                # 1. Binance Outflow Transfer
+                binance_pay_id = (request.data.get('binance_pay_id') or request.data.get('supplier_pay_id') or '').strip()
+                binance_txid_in = (request.data.get('binance_txid') or '').strip()
+                ref_id = binance_pay_id or binance_txid_in
+                if ref_id:
+                    consumed_check = BinanceApiService.check_binance_identifier_consumed(ref_id, exclude_module='GAME', exclude_id=withdrawal.id)
+                    if consumed_check.get('is_consumed'):
+                        err_msg = consumed_check.get('error_message')
+                        self._log_audit_error(withdrawal, 'DUPLICATE_BINANCE_PAY', err_msg, request, target_stage=target_stage)
                         return Response({
                             'success': False,
                             'is_duplicate': True,
-                            'error': f"G2Bulk Credit Transaction #{g2bulk_tx_id} has already been linked to Withdrawal #{existing_g2b.id} ({existing_g2b.title}). Reusing transactions is strictly prohibited."
+                            'error': err_msg
                         }, status=status.HTTP_409_CONFLICT)
-                withdrawal.g2bulk_transaction_id = g2bulk_tx_id
-                if not withdrawal.supplier_pay_id:
-                    withdrawal.supplier_pay_id = g2bulk_tx_id
+                    withdrawal.binance_pay_id = binance_pay_id or binance_txid_in
+                    withdrawal.supplier_pay_id = binance_pay_id or binance_txid_in
+                    withdrawal.binance_txid = binance_txid_in or binance_pay_id
+                    withdrawal.binance_verification_status = 'VERIFIED_MATCH'
 
-            if request.data.get('g2bulk_confirmed_increase_usd'):
+                # 2. Digital Services Account ( g2bulk ) Credit Transaction
+                g2bulk_tx_id = (request.data.get('g2bulk_transaction_id') or '').strip()
+                if g2bulk_tx_id:
+                    consumed_check = BinanceApiService.check_binance_identifier_consumed(g2bulk_tx_id, exclude_module='GAME', exclude_id=withdrawal.id)
+                    if consumed_check.get('is_consumed'):
+                        err_msg = consumed_check.get('error_message')
+                        self._log_audit_error(withdrawal, 'DUPLICATE_SUPPLIER_TX', err_msg, request, target_stage=target_stage)
+                        return Response({
+                            'success': False,
+                            'is_duplicate': True,
+                            'error': err_msg
+                        }, status=status.HTTP_409_CONFLICT)
+                    withdrawal.g2bulk_transaction_id = g2bulk_tx_id
+                    if not withdrawal.supplier_pay_id:
+                        withdrawal.supplier_pay_id = g2bulk_tx_id
+
+                if request.data.get('g2bulk_confirmed_increase_usd'):
+                    try:
+                        withdrawal.g2bulk_confirmed_increase_usd = Decimal(str(request.data.get('g2bulk_confirmed_increase_usd')))
+                    except Exception:
+                        pass
+                elif withdrawal.amount_usd_equivalent:
+                    withdrawal.g2bulk_confirmed_increase_usd = withdrawal.amount_usd_equivalent
+
+                g2b_credit = withdrawal.g2bulk_confirmed_increase_usd or withdrawal.amount_usd_equivalent or Decimal("0.00")
+                withdrawal.g2bulk_confirmed_increase_usd = g2b_credit
+
+                # Capture and store Binance Transaction / Network Fee
+                fee_usd = Decimal("0.0000")
+                if request.data.get('binance_fee_usd'):
+                    try:
+                        fee_usd = Decimal(str(request.data.get('binance_fee_usd'))).quantize(Decimal("0.0001"))
+                        withdrawal.binance_fee_usd = fee_usd
+                    except Exception:
+                        pass
+
+                settings = MonitoringGlobalSettings.get_settings()
+                rate = Decimal(str(withdrawal.p2p_rate or settings.usd_to_dzd_exchange_rate))
+                fee_dzd = (fee_usd * rate).quantize(Decimal("0.01"))
+                withdrawal.binance_fee_dzd = fee_dzd
+
+                if fee_dzd > Decimal("0.00"):
+                    ExpenseRecord.objects.create(
+                        title=f"Binance Digital Services Transfer Fee #{withdrawal.binance_pay_id or withdrawal.supplier_pay_id or withdrawal.id}",
+                        system_type=withdrawal.system_type,
+                        category=ExpenseCategory.BLOCKCHAIN_FEE,
+                        amount_dzd=fee_dzd,
+                        expense_date=withdrawal.withdrawal_date,
+                        related_supplier=withdrawal.destination_supplier,
+                        reference=withdrawal.binance_pay_id or withdrawal.supplier_pay_id or withdrawal.reference,
+                        notes=f"Auto-logged Binance transfer fee of ${fee_usd} USD ({fee_dzd:,.2f} DZD) for Digital Services Account ( g2bulk ) replenishment #{withdrawal.binance_pay_id or withdrawal.id}"
+                    )
+
                 try:
-                    withdrawal.g2bulk_confirmed_increase_usd = Decimal(str(request.data.get('g2bulk_confirmed_increase_usd')))
-                except Exception:
-                    pass
-            elif withdrawal.amount_usd_equivalent:
-                withdrawal.g2bulk_confirmed_increase_usd = withdrawal.amount_usd_equivalent
+                    G2BulkService.sync_supplier()
+                except Exception as e:
+                    self._log_audit_error(withdrawal, 'SYNC_SUPPLIER_WARNING', f"Auto-sync failed: {e}", request, target_stage=target_stage)
+                    logger.error(f"Failed to auto-sync Digital Services Account ( g2bulk ) on withdrawal completion: {e}")
 
-            # Enforce identical amounts: G2Bulk credited amount must match Stage 2 USDT acquired
-            g2b_credit = withdrawal.g2bulk_confirmed_increase_usd or withdrawal.amount_usd_equivalent or Decimal("0.00")
-            withdrawal.g2bulk_confirmed_increase_usd = g2b_credit
-
-            # Capture and store Binance Transaction / Network Fee
-            fee_usd = Decimal("0.0000")
-            if request.data.get('binance_fee_usd'):
-                try:
-                    fee_usd = Decimal(str(request.data.get('binance_fee_usd'))).quantize(Decimal("0.0001"))
-                    withdrawal.binance_fee_usd = fee_usd
-                except Exception:
-                    pass
-
-            settings = MonitoringGlobalSettings.get_settings()
-            rate = Decimal(str(withdrawal.p2p_rate or settings.usd_to_dzd_exchange_rate))
-            fee_dzd = (fee_usd * rate).quantize(Decimal("0.01"))
-            withdrawal.binance_fee_dzd = fee_dzd
-
-            # Auto-log Binance Transaction Fee as an ExpenseRecord for 100% accounting integrity
-            if fee_dzd > Decimal("0.00"):
-                ExpenseRecord.objects.create(
-                    title=f"Binance G2Bulk Transfer Fee #{withdrawal.binance_pay_id or withdrawal.supplier_pay_id or withdrawal.id}",
-                    system_type=withdrawal.system_type,
-                    category=ExpenseCategory.BLOCKCHAIN_FEE,
-                    amount_dzd=fee_dzd,
-                    expense_date=withdrawal.withdrawal_date,
-                    related_supplier=withdrawal.destination_supplier,
-                    reference=withdrawal.binance_pay_id or withdrawal.supplier_pay_id or withdrawal.reference,
-                    notes=f"Auto-logged Binance transfer fee of ${fee_usd} USD ({fee_dzd:,.2f} DZD) for G2Bulk replenishment #{withdrawal.binance_pay_id or withdrawal.id}"
+                g2b_msg = (
+                    f"[Stage 3: Digital Services Account ( g2bulk ) Confirmed & Closed @ {now_str}] "
+                    f"Binance Outflow: #{withdrawal.binance_pay_id or withdrawal.supplier_pay_id or 'N/A'} | "
+                    f"Digital Services Deposit: #{withdrawal.g2bulk_transaction_id or 'N/A'} | "
+                    f"Confirmed Credit: ${g2b_credit:,.2f} USD | "
+                    f"Binance Fee: ${fee_usd:,.4f} USD ({fee_dzd:,.2f} DZD) | "
+                    f"All 3 Stages 100% Balanced."
                 )
+                if raw_note:
+                    g2b_msg += f" | Note: {raw_note}"
+                withdrawal.notes = (withdrawal.notes or '').strip() + f"\n• {g2b_msg}"
 
-            # Trigger live G2Bulk balance sync
+            old_stage = withdrawal.stage
+            withdrawal.stage = target_stage
+            withdrawal.save()
+
+            # Institutional Operator Action Audit Logging
             try:
-                G2BulkService.sync_supplier()
-            except Exception as e:
-                logger.error(f"Failed to auto-sync G2Bulk on withdrawal completion: {e}")
+                OperatorActionLog.objects.create(
+                    operator=acting_user,
+                    operator_username=op_name,
+                    operator_family=withdrawal.system_type or 'GAMING',
+                    action_type=OperatorActionLog.ActionType.UPDATE,
+                    target_model='WithdrawalRecord',
+                    object_id=str(withdrawal.id),
+                    object_repr=f"Outflow #{withdrawal.id} ({withdrawal.title})",
+                    changes_summary=f"Advanced stage from {old_stage} to {target_stage} by {op_name}."
+                )
+            except Exception as log_err:
+                logger.warning(f"Failed to log advance_stage to OperatorActionLog: {log_err}")
 
-            g2b_msg = (
-                f"[Stage 3: G2Bulk Confirmed & Closed @ {now_str}] "
-                f"Binance Outflow: #{withdrawal.binance_pay_id or withdrawal.supplier_pay_id or 'N/A'} | "
-                f"G2Bulk Deposit: #{withdrawal.g2bulk_transaction_id or 'N/A'} | "
-                f"Confirmed Credit: ${g2b_credit:,.2f} USD | "
-                f"Binance Fee: ${fee_usd:,.4f} USD ({fee_dzd:,.2f} DZD) | "
-                f"All 3 Stages 100% Balanced."
+            return Response({
+                'success': True,
+                'message': f"Withdrawal #{withdrawal.id} successfully advanced to {withdrawal.get_stage_display()}.",
+                'record': WithdrawalRecordSerializer(withdrawal).data
+            })
+
+        except Exception as exc:
+            import traceback
+            tb = traceback.format_exc()
+            self._log_audit_error(
+                withdrawal,
+                'SYSTEM_EXCEPTION',
+                f"Unhandled Exception: {str(exc)}\nStack trace:\n{tb}",
+                request,
+                target_stage=target_stage
             )
-            if raw_note:
-                g2b_msg += f" | Note: {raw_note}"
-            withdrawal.notes = (withdrawal.notes or '').strip() + f"\n• {g2b_msg}"
-
-        withdrawal.stage = target_stage
-        withdrawal.save()
-
-        return Response({
-            'success': True,
-            'message': f"Withdrawal #{withdrawal.id} successfully advanced to {withdrawal.get_stage_display()}.",
-            'record': WithdrawalRecordSerializer(withdrawal).data
-        })
+            return Response({
+                'success': False,
+                'error': f"Operational transition failed: {str(exc)}"
+            }, status=status.HTTP_400_BAD_REQUEST)
 
     @action(detail=True, methods=['post'], url_path='parse-receipt', parser_classes=[MultiPartParser, FormParser])
     def parse_receipt(self, request, pk=None):
@@ -2472,7 +2547,6 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
         ref = parsed.get('reference')
         file_hash = parsed.get('file_hash')
         recipient_rip = parsed.get('recipient_rip')
-        fee = parsed.get('fee_dzd')
 
         # Strictly block already-used receipt (anti-double-spending)
         usage_info = ReceiptParserService.check_receipt_usage(
@@ -2504,7 +2578,6 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
                 'amount_matches': amount_matches,
                 'amount_difference': float(amount_diff),
                 'recipient_rip': recipient_rip,
-                'fee_dzd': float(fee) if fee else 50.0,
                 'filename': receipt_file.name,
                 'file_hash': file_hash,
                 'account_verification': acc_verif,
@@ -2569,15 +2642,64 @@ class WithdrawalRecordViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         now_str = timezone.now().strftime('%Y-%m-%d %H:%M')
-        user_label = request.user.username if request.user and request.user.is_authenticated else 'Operator'
-        entry = f"\n• [Audit Note by {user_label} @ {now_str}]: {new_note}"
+        acting_user = request.user if (request.user and request.user.is_authenticated) else None
+        op_name = (
+            request.data.get('operator_name')
+            or (acting_user.username if acting_user else 'Admin')
+        ).strip()
+        withdrawal.operator_name = op_name
+        if acting_user:
+            withdrawal.last_operator_user = acting_user
+        entry = f"\n• [Audit Note by {op_name} @ {now_str}]: {new_note}"
         withdrawal.notes = (withdrawal.notes or '').strip() + entry
         withdrawal.save()
+
+        # Institutional Operator Action Audit Logging
+        try:
+            OperatorActionLog.objects.create(
+                operator=acting_user,
+                operator_username=op_name,
+                operator_family=withdrawal.system_type or 'GAMING',
+                action_type='UPDATE',
+                target_model='WithdrawalRecord',
+                object_id=str(withdrawal.id),
+                object_repr=f"Outflow #{withdrawal.id} ({withdrawal.title})",
+                changes_summary=f"Appended audit note by {op_name}: {new_note[:120]}"
+            )
+        except Exception as log_err:
+            logger.warning(f"Failed to log append_note to OperatorActionLog: {log_err}")
+
         return Response({
             'success': True,
             'message': 'Audit note appended successfully.',
             'notes': withdrawal.notes,
             'record': WithdrawalRecordSerializer(withdrawal).data
+        })
+
+    @action(detail=True, methods=['get'], url_path='audit-logs')
+    def get_audit_logs(self, request, pk=None):
+        """Returns all OperatorActionLog entries and deep diagnostic traces for this operational record on demand"""
+        withdrawal = self.get_object()
+        logs = OperatorActionLog.objects.filter(
+            target_model='WithdrawalRecord',
+            object_id=str(withdrawal.id)
+        ).order_by('-timestamp')
+        return Response({
+            'success': True,
+            'record_id': withdrawal.id,
+            'created_by': withdrawal.created_by,
+            'operator_name': withdrawal.operator_name,
+            'notes': withdrawal.notes,
+            'logs': [
+                {
+                    'id': l.id,
+                    'timestamp': l.timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+                    'operator_username': l.operator_username,
+                    'action_type': l.action_type,
+                    'changes_summary': l.changes_summary,
+                }
+                for l in logs
+            ]
         })
 
     @action(detail=False, methods=['get'], url_path='pipeline-overview')
@@ -2682,7 +2804,6 @@ class LiquidityRetraitRecordViewSet(viewsets.ModelViewSet):
 
         amount = parsed.get('amount_dzd')
         recipient_rip = parsed.get('recipient_rip')
-        fee = parsed.get('fee_dzd')
 
         # 1. Strict Recipient Account Verification (Enforce registered system account)
         if not acc_verif.get('is_registered'):
@@ -2693,38 +2814,53 @@ class LiquidityRetraitRecordViewSet(viewsets.ModelViewSet):
                 'account_details': acc_verif
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # Enforce Gaming subsystem recipient match
-        if system_type == 'GAMING' and acc_verif.get('system_type') not in ['GAMING', 'ALL']:
+        # Enforce Gaming and eSIM subsystem recipient match
+        if system_type in ['GAMING', SubSystemType.GAMING] and acc_verif.get('system_type') not in ['GAMING', 'ALL']:
             return Response({
                 'success': False,
-                'error': f"Target Account Mismatch: Receipt recipient ({acc_verif.get('account_name')}) is not the Gaming Operational Account. GAMING refills must be sent strictly to Gaming Account (00799999001738866535).",
+                'error': f"Target Account Mismatch: Receipt recipient ({acc_verif.get('account_name')}) is not the Digital Services Operational Account. GAMING refills must be sent strictly to Digital Services Operational Account (00799999001738866535).",
+                'account_verified': False,
+                'account_details': acc_verif
+            }, status=status.HTTP_400_BAD_REQUEST)
+        elif system_type in ['ESIM', SubSystemType.ESIM] and acc_verif.get('system_type') not in ['ESIM', 'GAMING', 'ALL'] and str(recipient_rip or '').strip() != '00799999001738866535':
+            return Response({
+                'success': False,
+                'error': f"Target Account Mismatch: Receipt recipient ({acc_verif.get('account_name')}) is not an authorized eSIM Operational Account. eSIM refills must be sent strictly to authorized accounts (00799999001738866535).",
                 'account_verified': False,
                 'account_details': acc_verif
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # 2. Strict BaridiMob Statement Inflow Verification
-        if not bm_verif.get('is_verified'):
-            err_msg = bm_verif.get('message') or f"Strict Verification Failed: Transaction #{ref or 'N/A'} was not confirmed as an inflow in official BaridiMob account statements."
-            return Response({
-                'success': False,
-                'error': err_msg,
-                'statement_verified': False,
-                'statement_details': bm_verif
-            }, status=status.HTTP_400_BAD_REQUEST)
+        # 2. BaridiMob Statement Verification (Strictly mandatory for ESIM and XLM)
+        is_stmt_verified = bool(bm_verif.get('is_verified', False))
+        if str(system_type).upper() in ['ESIM', 'XLM', SubSystemType.ESIM, SubSystemType.XLM]:
+            if not is_stmt_verified:
+                return Response({
+                    'success': False,
+                    'error': bm_verif.get('message') or f"Mandatory Statement Verification Failed: Transaction #{ref or 'N/A'} was not verified in official BaridiMob statement records.",
+                    'statement_verified': False,
+                    'statement_status': bm_verif.get('status'),
+                    'statement_details': bm_verif,
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            if not amount or Decimal(str(amount)) <= Decimal('0.00'):
+                return Response({
+                    'success': False,
+                    'error': f"Mandatory OCR Amount Extraction Failed: Amount could not be extracted from receipt image. Manual amount entry is strictly prohibited for {system_type}.",
+                    'statement_verified': False,
+                }, status=status.HTTP_400_BAD_REQUEST)
 
         return Response({
             'success': True,
             'is_duplicate': is_duplicate,
             'duplicate_warning': usage_info.get('reason') if is_duplicate else None,
             'usage_info': usage_info if is_duplicate else None,
-            'statement_verified': bm_verif.get('is_verified', False),
+            'statement_verified': is_stmt_verified,
             'statement_status': bm_verif.get('status'),
             'statement_details': bm_verif,
             'extracted': {
                 'reference': ref,
                 'amount_dzd': float(amount) if amount else None,
                 'recipient_rip': recipient_rip,
-                'fee_dzd': float(fee) if fee else 50.0,
                 'filename': getattr(receipt_file, 'name', 'receipt.pdf'),
                 'file_hash': file_hash,
                 'date_str': parsed.get('date_str'),
@@ -2785,10 +2921,15 @@ class LiquidityRetraitRecordViewSet(viewsets.ModelViewSet):
                     'error': f"Unauthorized Recipient: RIP {parsed_receipt.get('recipient_rip') or 'N/A'} is not a registered system account."
                 }, status=status.HTTP_400_BAD_REQUEST)
 
-            if data.get('system_type') == 'GAMING' and acc_verif.get('system_type') not in ['GAMING', 'ALL'] and not (request.user and request.user.is_superuser):
+            if data.get('system_type') in ['GAMING', SubSystemType.GAMING] and acc_verif.get('system_type') not in ['GAMING', 'ALL'] and not (request.user and request.user.is_superuser):
                 return Response({
                     'success': False,
-                    'error': f"Target Mismatch: Receipt recipient ({acc_verif.get('account_name')}) is not the Gaming Operational Account. GAMING refills must be sent strictly to Gaming Account (00799999001738866535)."
+                    'error': f"Target Mismatch: Receipt recipient ({acc_verif.get('account_name')}) is not the Digital Services Operational Account. GAMING refills must be sent strictly to Digital Services Operational Account (00799999001738866535).",
+                }, status=status.HTTP_400_BAD_REQUEST)
+            elif data.get('system_type') in ['ESIM', SubSystemType.ESIM] and acc_verif.get('system_type') not in ['ESIM', 'GAMING', 'ALL'] and str(parsed_receipt.get('recipient_rip') or '').strip() != '00799999001738866535' and not (request.user and request.user.is_superuser):
+                return Response({
+                    'success': False,
+                    'error': f"Target Mismatch: Receipt recipient ({acc_verif.get('account_name')}) is not an authorized eSIM Operational Account. eSIM refills must be sent strictly to authorized accounts (00799999001738866535).",
                 }, status=status.HTTP_400_BAD_REQUEST)
 
             matched_bm_account = BaridiMobAccount.objects.filter(id=acc_verif.get('account_id')).first() if acc_verif.get('is_registered') else None
@@ -2796,6 +2937,25 @@ class LiquidityRetraitRecordViewSet(viewsets.ModelViewSet):
             bm_statement_verif = parsed_receipt.get('baridimob_statement_verification') or {}
             is_stmt_verified = bool(bm_statement_verif.get('is_verified'))
             data['receipt_verified'] = is_stmt_verified
+
+            # Mandatory statement verification and prohibition of manual amount for ESIM and XLM
+            if str(data.get('system_type')).upper() in ['ESIM', 'XLM', SubSystemType.ESIM, SubSystemType.XLM] and not (request.user and request.user.is_superuser):
+                if not is_stmt_verified:
+                    return Response({
+                        'success': False,
+                        'error': bm_statement_verif.get('message') or f"Mandatory Statement Verification Failed: Transaction #{ref or 'N/A'} was not confirmed in BaridiMob bank statement.",
+                        'statement_status': bm_statement_verif.get('status')
+                    }, status=status.HTTP_400_BAD_REQUEST)
+
+                if not parsed_receipt.get('amount_dzd') or Decimal(str(parsed_receipt.get('amount_dzd'))) <= Decimal('0.00'):
+                    return Response({
+                        'success': False,
+                        'error': f"Manual amount input is strictly prohibited for {data.get('system_type')}. Amount must be automatically extracted from official BaridiMob receipt OCR."
+                    }, status=status.HTTP_400_BAD_REQUEST)
+
+                data['amount_dzd'] = parsed_receipt.get('amount_dzd')
+                data['receipt_amount_dzd'] = parsed_receipt.get('amount_dzd')
+
             if is_stmt_verified:
                 data['notes'] = (data.get('notes') or '').strip() + f"\n• [BaridiMob Statement] Confirmed on bank statement ({bm_statement_verif.get('account_name')}, #{bm_statement_verif.get('transaction_id')})."
             else:
@@ -2824,6 +2984,12 @@ class LiquidityRetraitRecordViewSet(viewsets.ModelViewSet):
                 else:
                     data['destination_recipient'] = f"{sys_label} Operational Account"
         else:
+            if str(data.get('system_type')).upper() in ['ESIM', 'XLM', SubSystemType.ESIM, SubSystemType.XLM] and not (request.user and request.user.is_superuser):
+                return Response({
+                    'success': False,
+                    'error': f"Official BaridiMob receipt is strictly mandatory for {data.get('system_type')}. Manual cash extractions without verified receipt OCR are prohibited."
+                }, status=status.HTTP_400_BAD_REQUEST)
+
             if not data.get('amount_dzd'):
                 return Response({
                     'success': False,
@@ -2839,62 +3005,50 @@ class LiquidityRetraitRecordViewSet(viewsets.ModelViewSet):
         if matched_bm_account and not data.get('source_baridimob'):
             data['source_baridimob'] = matched_bm_account.id
 
-        # Strict Institutional Policy: Walid cannot inject more than available balance in Games Collection Wallet (Stellar 2)
-        # Live Stellar blockchain sync is performed FIRST to get the real on-chain balance before any cap check.
+        # Strict Institutional Policy: Live Stellar blockchain sync is performed FIRST to get the real on-chain balance
         source_wallet = None
+        perform_stellar_deduction = False
         if data.get('system_type') in [SubSystemType.GAMING, 'GAMING']:
             source_wallet = (
                 StellarWallet.objects.filter(family=WalletFamily.GAME, role=WalletRole.WITHDRAWAL, is_active=True).first()
                 or StellarWallet.objects.filter(id=2).first()
             )
-            if source_wallet:
-                data['source_wallet'] = source_wallet.id
-                refill_amt = Decimal(str(data.get('amount_dzd') or 0.00))
+        elif data.get('system_type') in [SubSystemType.ESIM, 'ESIM']:
+            source_wallet = (
+                StellarWallet.objects.filter(family=WalletFamily.ESIM, role=WalletRole.COLLECTION, is_active=True).first()
+                or StellarWallet.objects.filter(family=WalletFamily.ESIM, role=WalletRole.WITHDRAWAL, is_active=True).first()
+                or StellarWallet.objects.filter(id=7).first()
+            )
 
-                # --- Step 1: Fetch LIVE on-chain balance from Stellar blockchain ---
-                live_sync_error = None
-                try:
-                    logger.info(f"[LiquidityRetrait] Syncing live Stellar balance for wallet '{source_wallet.name}' before cap check...")
-                    StellarService.sync_wallet(source_wallet)
-                    source_wallet.refresh_from_db()
-                    logger.info(f"[LiquidityRetrait] Live Stellar balance for '{source_wallet.name}': {source_wallet.dzt_balance} DZT")
-                except Exception as sync_err:
-                    live_sync_error = str(sync_err)
-                    logger.warning(f"[LiquidityRetrait] Live Stellar sync failed for '{source_wallet.name}': {sync_err}. Falling back to last known DB balance.")
+        if source_wallet:
+            data['source_wallet'] = source_wallet.id
+            refill_amt = Decimal(str(data.get('amount_dzd') or 0.00))
 
-                # --- Step 2: Use live (or last-known) balance for the cap check ---
-                avail_dzt = source_wallet.dzt_balance or Decimal('0.00')
+            # --- Step 1: Fetch LIVE on-chain balance from Stellar blockchain ---
+            live_sync_error = None
+            try:
+                logger.info(f"[LiquidityRetrait] Syncing live Stellar balance for wallet '{source_wallet.name}' before cap check...")
+                StellarService.sync_wallet(source_wallet)
+                source_wallet.refresh_from_db()
+                logger.info(f"[LiquidityRetrait] Live Stellar balance for '{source_wallet.name}': {source_wallet.dzt_balance} DZT")
+            except Exception as sync_err:
+                live_sync_error = str(sync_err)
+                logger.warning(f"[LiquidityRetrait] Live Stellar sync failed for '{source_wallet.name}': {sync_err}. Falling back to last known DB balance.")
 
-                # Hard block: refill amount cannot exceed real on-chain balance
-                if refill_amt > avail_dzt:
-                    sync_note = " (live on-chain balance)" if not live_sync_error else " (last known DB balance — live sync unavailable)"
-                    return Response({
-                        'success': False,
-                        'stellar_lock': True,
-                        'error': (
-                            f"Stellar Balance Lock: Cannot process {refill_amt:,.2f} DZD refill. "
-                            f"Games Collection Wallet ({source_wallet.name}) holds only "
-                            f"{avail_dzt:,.2f} DZT{sync_note}. "
-                            f"Submission is strictly locked until sufficient on-chain balance is available."
-                        ),
-                        'available_dzt': float(avail_dzt),
-                        'requested_dzd': float(refill_amt),
-                        'wallet_name': source_wallet.name,
-                        'live_sync_error': live_sync_error,
-                    }, status=status.HTTP_400_BAD_REQUEST)
+            # --- Step 2: Use live (or last-known) balance to decide on Stellar deduction ---
+            avail_dzt = source_wallet.dzt_balance or Decimal('0.00')
 
-                # Hard block: refuse entirely if wallet has zero balance
-                if avail_dzt <= Decimal('0.00'):
-                    return Response({
-                        'success': False,
-                        'stellar_lock': True,
-                        'error': (
-                            f"Stellar Balance Lock: Games Collection Wallet ({source_wallet.name}) "
-                            f"has zero DZT on-chain. No refill can be processed until the wallet is funded."
-                        ),
-                        'available_dzt': 0.0,
-                        'wallet_name': source_wallet.name,
-                    }, status=status.HTTP_400_BAD_REQUEST)
+            # Institutional Decoupling Rule:
+            # If on-chain wallet balance is sufficient, perform mirror sweep deduction.
+            # If balance is insufficient or receipt amount exceeds on-chain balance, accept receipt purely for recording the refill without deducting DZT.
+            if avail_dzt >= refill_amt and refill_amt > 0:
+                perform_stellar_deduction = True
+            else:
+                perform_stellar_deduction = False
+                logger.info(
+                    f"[LiquidityRetrait] Refill amount ({refill_amt} DZD) exceeds or has insufficient on-chain balance "
+                    f"({avail_dzt} DZT in {source_wallet.name}). Recording pure quota refill without Stellar DZT deduction."
+                )
 
         try:
             with transaction.atomic():
@@ -2906,23 +3060,9 @@ class LiquidityRetraitRecordViewSet(viewsets.ModelViewSet):
                     retrait.receipt_file = receipt_file
                     retrait.save(update_fields=['receipt_file'])
 
-                # Log standard 50 DZD transfer fee expense
-                fee_amount = Decimal(str(parsed_receipt.get('fee_dzd', '50.00'))) if parsed_receipt else Decimal('50.00')
-                if fee_amount > 0:
-                    try:
-                        ExpenseRecord.objects.create(
-                            title=f"BaridiMob Retrait Fee - Ref #{retrait.reference or retrait.id}",
-                            category=ExpenseCategory.FEE,
-                            amount_dzd=fee_amount,
-                            system_type=retrait.system_type,
-                            notes=f"Automated fee deduction for Retrait #{retrait.id} ({retrait.amount_dzd} DZD)"
-                        )
-                    except Exception as fee_err:
-                        logger.warning(f"Failed to record fee expense for retrait #{retrait.id}: {fee_err}")
-
-                # 1:1 Mirror Sweep: Deduct DZT from Collection Wallet (Stellar 2) and credit Big SofizPay Central Treasury Vault (Stellar 1)
+                # 1:1 Mirror Sweep: Deduct DZT from Collection Wallet (Stellar 2) and credit Big SofizPay Central Treasury Vault (Stellar 1) if balance is sufficient
                 resolved_source = source_wallet or retrait.source_wallet
-                if resolved_source:
+                if resolved_source and perform_stellar_deduction:
                     big_vault = (
                         StellarWallet.objects.filter(family=WalletFamily.TREASURY, role=WalletRole.VAULT, is_active=True).first()
                         or StellarWallet.objects.filter(id=1).first()
@@ -2949,6 +3089,11 @@ class LiquidityRetraitRecordViewSet(viewsets.ModelViewSet):
                     )
                     retrait.source_wallet = resolved_source
                     retrait.notes = (retrait.notes or '').strip() + f"\n• [Stellar Mirror Sweep] Transferred {retrait.amount_dzd:,.2f} DZT from {resolved_source.name} to {big_vault.name if big_vault else 'Big SofizPay'} (Log #{sweep_log.id})."
+                    retrait.save(update_fields=['source_wallet', 'notes'])
+                elif resolved_source and not perform_stellar_deduction:
+                    avail_dzt = resolved_source.dzt_balance or Decimal('0.00')
+                    retrait.source_wallet = resolved_source
+                    retrait.notes = (retrait.notes or '').strip() + "\n• [Pure Refill] Recorded directly without DZT deduction."
                     retrait.save(update_fields=['source_wallet', 'notes'])
 
                 # Real-time Operational Refill Notification to Manager & Admin
@@ -3082,7 +3227,7 @@ class GamingMonitoringAPIView(APIView):
                 BaridiMobService.sync_baridi_balance(account_key='game')
                 gaming_account = BaridiMobAccount.objects.filter(system_type=SubSystemType.GAMING, is_active=True).first()
             except Exception as e:
-                logger.warning(f"Error during gaming Gaming Account auto-sync: {e}")
+                logger.warning(f"Error during gaming Digital Services Operational Account auto-sync: {e}")
 
         settings = MonitoringGlobalSettings.get_settings()
 
@@ -3209,6 +3354,8 @@ class GamingMonitoringAPIView(APIView):
                 } if withdrawal_wallet else None,
                 'g2bulk_usd': total_g2bulk_usd,
                 'g2bulk_dzd': total_g2bulk_dzd,
+                'digital_services_usd': total_g2bulk_usd,
+                'digital_services_dzd': total_g2bulk_dzd,
                 'binance_usdt': total_binance_usdt,
                 'binance_dzd': total_binance_dzd,
                 'exchange_rate': float(p2p_rate_dec),
@@ -3235,10 +3382,38 @@ class GamingMonitoringAPIView(APIView):
         today = date.today()
         today_str = today.strftime('%Y-%m-%d')
         today_epay = EpaySyncService.sync_financial_summary(from_date=today_str, to_date=today_str)
-        today_games_profit_dzd = float(today_epay.get('total_profit_dzd', 0.0))
-        today_games_sales_dzd = float(today_epay.get('total_sales_dzd', 0.0))
-        today_games_cost_dzd = float(today_epay.get('total_cost_dzd', 0.0))
-        today_orders_count = int(today_epay.get('total_orders_count', 0))
+        raw_breakdown = today_epay.get('breakdown') or {}
+
+        # Exclude non-gaming categories (e.g. Algerie Telecom) from gaming profit reconciliation
+        gaming_breakdown = {}
+        non_gaming_profit = 0.0
+        non_gaming_sales = 0.0
+        non_gaming_cost = 0.0
+        non_gaming_orders = 0
+
+        if isinstance(raw_breakdown, dict):
+            for product_key, stats in raw_breakdown.items():
+                p_lower = str(product_key).lower()
+                if 'telecom' in p_lower or 'algerie' in p_lower:
+                    if isinstance(stats, dict):
+                        non_gaming_profit += float(stats.get('profit_dzd', 0.0) or 0.0)
+                        non_gaming_sales += float(stats.get('sales_dzd', 0.0) or 0.0)
+                        non_gaming_cost += float(stats.get('cost_dzd', 0.0) or 0.0)
+                        non_gaming_orders += int(stats.get('orders', 0) or 0)
+                else:
+                    gaming_breakdown[product_key] = stats
+        else:
+            gaming_breakdown = raw_breakdown
+
+        raw_profit_dzd = float(today_epay.get('total_profit_dzd', 0.0))
+        raw_sales_dzd = float(today_epay.get('total_sales_dzd', 0.0))
+        raw_cost_dzd = float(today_epay.get('total_cost_dzd', 0.0))
+        raw_orders_count = int(today_epay.get('total_orders_count', 0))
+
+        today_games_profit_dzd = max(0.0, raw_profit_dzd - non_gaming_profit)
+        today_games_sales_dzd = max(0.0, raw_sales_dzd - non_gaming_sales)
+        today_games_cost_dzd = max(0.0, raw_cost_dzd - non_gaming_cost)
+        today_orders_count = max(0, raw_orders_count - non_gaming_orders)
 
         # Sweeps executed from GAME collection wallets to profit wallet today
         profit_sweeps_today = WalletSweepLog.objects.filter(
@@ -3270,7 +3445,7 @@ class GamingMonitoringAPIView(APIView):
             'is_fully_swept': is_fully_swept,
             'status': 'SWEPT' if is_fully_swept else 'PENDING',
             'all_time_swept_profit_dzt': round(all_time_swept_profit_dzt, 2),
-            'breakdown': today_epay.get('breakdown', {}),
+            'breakdown': gaming_breakdown,
             'recent_sweeps': [
                 {
                     'id': s.id,
@@ -3313,6 +3488,8 @@ class GamingMonitoringAPIView(APIView):
                 'right_side': right_side,
                 'total_g2bulk_usd': total_g2bulk_usd,
                 'total_g2bulk_dzd': total_g2bulk_dzd,
+                'total_digital_services_usd': total_g2bulk_usd,
+                'total_digital_services_dzd': total_g2bulk_dzd,
                 'total_binance_usdt': total_binance_usdt,
                 'total_binance_dzd': total_binance_dzd,
                 'total_in_transit_dzd': total_in_transit_dzd,
@@ -3454,7 +3631,7 @@ class gamingGamingAccountAPIView(APIView):
 
         if not acc:
             acc = BaridiMobAccount.objects.create(
-                account_name="gaming Gaming Account (gamingsofi)",
+                account_name="gaming Digital Services Operational Account (gamingsofi)",
                 rip_number="00799999001738866535",
                 account_email="gamingsofi",
                 system_type=SubSystemType.GAMING,
@@ -3490,7 +3667,7 @@ class gamingGamingAccountAPIView(APIView):
                 'id': 'CRITICAL_ZERO_BALANCE',
                 'severity': 'danger',
                 'title': 'Critical Zero Liquidity',
-                'message': 'gaming Gaming account has 0.00 DZD balance. Immediate replenishment required for gaming operations.',
+                'message': 'gaming Digital Services Operational Account has 0.00 DZD balance. Immediate replenishment required for gaming operations.',
             })
         elif effective_card < 10000.00:
             issues.append({
@@ -3587,7 +3764,7 @@ class gamingGamingAccountAPIView(APIView):
 
 class gamingGamingAccountSyncAPIView(APIView):
     """
-    Synchronizes gaming Gaming Account live balance and archived transactions with Epay BaridiMob API.
+    Synchronizes gaming Digital Services Operational Account live balance and archived transactions with Epay BaridiMob API.
     """
     permission_classes = [permissions.AllowAny]
 
@@ -3640,7 +3817,7 @@ class gamingGamingAccountSyncAPIView(APIView):
             'g2bulk': g2bulk_info,
             'account': {
                 'id': acc.id if acc else None,
-                'account_name': acc.account_name if acc else "gaming Gaming Account",
+                'account_name': acc.account_name if acc else "gaming Digital Services Operational Account",
                 'balance_dzd': float(acc.balance_dzd if acc else 0.0),
                 'eccp_balance_dzd': float(acc.eccp_balance_dzd if acc else 0.0),
                 'last_synced_at': acc.last_synced_at.strftime('%Y-%m-%d %H:%M:%S') if (acc and acc.last_synced_at) else None,
@@ -4054,14 +4231,141 @@ class eSIMMonitoringAPIView(APIView):
         gaming_allocation = audit_res.get('gaming_allocation') or BalanceEngine.get_gaming_baridimob_allocation()
 
         # Recent Fundings (4-stage pipeline)
-        recent_fundings = eSIMFundingRecord.objects.all().order_by('-created_at')[:20]
+        recent_fundings = eSIMFundingRecord.objects.all().order_by('-created_at')[:100]
 
         # Recent Orders
         recent_orders = eSIMOrderRecord.objects.all().order_by('-created_at')[:20]
 
+        # Capital Reconciliation Engine for eSIM (Strict Separation: Left Holding Accounts vs Right eSIM Working Capital)
+        from .services.p2p_rate_service import P2PRateService
+        p2p_audit = P2PRateService.get_effective_p2p_rate('ESIM')
+        p2p_rate_dec = p2p_audit['rate']
+
+        right_side_capital = round(float(audit_res['esim_capital']), 2)
+        compte_esim_dzd = round(float(gaming_allocation['esim']['available_balance_dzd']), 2)
+        collection_wallet_dzt = round(float(collection_wallet.dzt_balance), 2) if collection_wallet else 0.0
+        profit_wallet_dzt = round(float(profit_wallet.dzt_balance), 2) if profit_wallet else 0.0
+        all_esim_wallets_dzt = round(float(audit_res['esim_wallets_dzt']), 2)
+
+        airalo_usd = float(airalo_acc.available_balance_usd) if airalo_acc else 0.0
+        airalo_dzd = round(float(audit_res['airalo_dzd_total']), 2)
+
+        bybit_usdt = float((bybit_acc.funding_balance_usdt or Decimal('0.00')) + (bybit_acc.unified_balance_usdt or Decimal('0.00'))) if bybit_acc else 0.0
+        bybit_dzd = round(float(audit_res['bybit_dzd_total']), 2)
+
+        in_transit_dzd = round(float(audit_res['in_transit_dzd']), 2)
+
+        left_side_capital_total = round(
+            compte_esim_dzd +
+            all_esim_wallets_dzt +
+            airalo_dzd +
+            bybit_dzd +
+            in_transit_dzd,
+            2
+        )
+        capital_discrepancy = round(left_side_capital_total - right_side_capital, 2)
+        is_capital_balanced = abs(capital_discrepancy) <= 1.0
+        capital_status = 'BALANCED' if is_capital_balanced else ('SURPLUS' if capital_discrepancy > 1.0 else 'DEFICIT')
+
+        esim_wallets_list = [
+            {
+                'id': w.id,
+                'name': w.name,
+                'public_address': w.public_address,
+                'role': w.role,
+                'family': w.family,
+                'dzt_balance': float(w.dzt_balance),
+            }
+            for w in esim_wallets_qs
+        ]
+
+        capital_reconciliation = {
+            'is_balanced': is_capital_balanced,
+            'status': capital_status,
+            'discrepancy_dzd': capital_discrepancy,
+            'right_side': {
+                'total_dzd': right_side_capital,
+                'esim_capital_dzd': right_side_capital,
+            },
+            'left_side': {
+                'total_dzd': left_side_capital_total,
+                'compte_esim_dzd': compte_esim_dzd,
+                'collection_wallet_dzt': collection_wallet_dzt,
+                'profit_wallet_dzt': profit_wallet_dzt,
+                'all_esim_wallets_dzt': all_esim_wallets_dzt,
+                'wallets': esim_wallets_list,
+                'airalo_usd': airalo_usd,
+                'airalo_dzd': airalo_dzd,
+                'bybit_usdt': bybit_usdt,
+                'bybit_dzd': bybit_dzd,
+                'in_transit_dzd': in_transit_dzd,
+                'exchange_rate': float(p2p_rate_dec),
+            },
+        }
+
+        # Profit Reconciliation Engine (eSIM Net Profit vs Swept to Profit Vault)
+        from datetime import date
+        from .models import WalletSweepLog
+
+        today = date.today()
+        today_orders_qs = eSIMOrderRecord.objects.filter(
+            status='COMPLETED',
+            created_at__date=today
+        )
+        today_esim_profit_dzd = float(today_orders_qs.aggregate(total=Sum('net_profit_dzd'))['total'] or 0.0)
+        today_esim_sales_dzd = float(today_orders_qs.aggregate(total=Sum('sale_price_dzd'))['total'] or 0.0)
+        today_esim_cost_dzd = float(today_orders_qs.aggregate(total=Sum('cost_dzd'))['total'] or 0.0)
+        today_orders_count = today_orders_qs.count()
+
+        # Sweeps executed from ESIM collection wallets to profit wallet today
+        profit_sweeps_today = WalletSweepLog.objects.filter(
+            source_wallet__family=WalletFamily.ESIM,
+            destination_wallet=profit_wallet,
+            status='SUCCESS',
+            timestamp__date=today
+        )
+        today_swept_profit_dzt = float(profit_sweeps_today.aggregate(total=Sum('amount_dzt'))['total'] or 0.0)
+
+        # All-time sweeps from ESIM collection wallets to profit wallet
+        profit_sweeps_all_time = WalletSweepLog.objects.filter(
+            source_wallet__family=WalletFamily.ESIM,
+            destination_wallet=profit_wallet,
+            status='SUCCESS'
+        )
+        all_time_swept_profit_dzt = float(profit_sweeps_all_time.aggregate(total=Sum('amount_dzt'))['total'] or 0.0)
+        all_time_profit_dzd = float(eSIMOrderRecord.objects.filter(status='COMPLETED').aggregate(total=Sum('net_profit_dzd'))['total'] or 0.0)
+
+        pending_sweep_dzd = max(0.0, round(today_esim_profit_dzd - today_swept_profit_dzt, 2))
+        is_fully_swept = today_swept_profit_dzt >= (today_esim_profit_dzd - 0.5)
+
+        profit_reconciliation = {
+            'today_esim_profit_dzd': round(today_esim_profit_dzd, 2),
+            'today_esim_sales_dzd': round(today_esim_sales_dzd, 2),
+            'today_esim_cost_dzd': round(today_esim_cost_dzd, 2),
+            'today_orders_count': today_orders_count,
+            'today_swept_profit_dzt': round(today_swept_profit_dzt, 2),
+            'pending_sweep_dzd': pending_sweep_dzd,
+            'is_fully_swept': is_fully_swept,
+            'status': 'SWEPT' if is_fully_swept else 'PENDING',
+            'all_time_swept_profit_dzt': round(all_time_swept_profit_dzt, 2),
+            'all_time_profit_dzd': round(all_time_profit_dzd, 2),
+            'recent_sweeps': [
+                {
+                    'id': s.id,
+                    'timestamp': s.timestamp.strftime('%H:%M'),
+                    'source': s.source_wallet.name if s.source_wallet else 'eSIM Collection Wallet',
+                    'amount_dzt': float(s.amount_dzt),
+                    'tx_hash': s.stellar_tx_hash[:12] if s.stellar_tx_hash else '',
+                }
+                for s in profit_sweeps_today.order_by('-timestamp')[:5]
+            ]
+        }
+
         return Response({
             'success': True,
             'timestamp': timezone.now().isoformat(),
+            'capital_reconciliation': capital_reconciliation,
+            'profit_reconciliation': profit_reconciliation,
             'airalo_min_threshold_usd': float(settings.airalo_min_threshold_usd or 100.0),
             'gaming_baridimob_allocation': gaming_allocation,
             'operational_account': gaming_allocation.get('operational_accounts', {}).get('esim', {}),
@@ -4380,6 +4684,17 @@ class eSIMFundingRecordViewSet(viewsets.ModelViewSet):
         p2p_rate = request.data.get('p2p_rate')
         usdt_amount = request.data.get('binance_verified_amount_usdt')
 
+        # Cross-Module Anti-Double-Spending Lock
+        for candidate in [binance_order_id, binance_txid]:
+            if candidate:
+                consumed_check = BinanceApiService.check_binance_identifier_consumed(candidate, exclude_module='ESIM', exclude_id=funding.id)
+                if consumed_check.get('is_consumed'):
+                    return Response({
+                        'success': False,
+                        'is_duplicate': True,
+                        'error': consumed_check.get('error_message')
+                    }, status=status.HTTP_409_CONFLICT)
+
         funding.stage = eSIMFundingStage.BINANCE_P2P
         if binance_order_id:
             funding.binance_p2p_order_id = binance_order_id
@@ -4400,6 +4715,16 @@ class eSIMFundingRecordViewSet(viewsets.ModelViewSet):
         bybit_txid = request.data.get('bybit_txid', '').strip()
         usdt_transferred = request.data.get('bybit_transfer_amount_usdt')
         visa_card = request.data.get('visa_card_last4', 'Bybit Visa').strip()
+
+        # Cross-Module Anti-Double-Spending Lock
+        if bybit_txid:
+            consumed_check = BinanceApiService.check_binance_identifier_consumed(bybit_txid, exclude_module='ESIM', exclude_id=funding.id)
+            if consumed_check.get('is_consumed'):
+                return Response({
+                    'success': False,
+                    'is_duplicate': True,
+                    'error': consumed_check.get('error_message')
+                }, status=status.HTTP_409_CONFLICT)
 
         funding.stage = eSIMFundingStage.BYBIT_FUNDED
         if bybit_txid:
@@ -4631,7 +4956,7 @@ class MasterLiquiditySummaryAPIView(APIView):
             'operational_accounts': BalanceEngine.get_operational_account_balances_db(),
             'quotas': {
                 'gaming': {
-                    'title': 'Gaming Operational Account',
+                    'title': 'Digital Services Operational Account',
                     'activity': 'Gaming Top-Ups (Free Fire, PUBG & G2Bulk)',
                     'available_quota_dzd': gaming_available,
                     'target_quota_dzd': gaming_target,
@@ -4667,8 +4992,8 @@ class MasterLiquiditySummaryAPIView(APIView):
             },
             'wholesale_suppliers': {
                 'g2bulk': {
-                    'name': 'G2Bulk Wholesale Counterparty',
-                    'provider': 'G2Bulk',
+                    'name': 'Digital Services Account ( g2bulk ) Wholesale Counterparty',
+                    'provider': 'Digital Services Account ( g2bulk )',
                     'activity': 'Gaming Digital Codes & Wholesale Inventory',
                     'balance_usd': g2bulk_usd,
                     'balance_dzd': g2bulk_dzd,
@@ -4891,10 +5216,10 @@ class UnifiedAccountsMonitoringAPIView(APIView):
         channels_metadata = [
             {
                 'key': AccountMonitoringChannel.G2BULK,
-                'title': 'G2Bulk Wholesale Inventory',
+                'title': 'Digital Services Account ( g2bulk ) Wholesale Inventory',
                 'category': 'Gaming Wholesale',
                 'activity': 'Gaming',
-                'source': 'G2Bulk',
+                'source': 'Digital Services Account ( g2bulk )',
                 'currency': 'USD',
                 'account_number': 'UID: 8147834549',
                 'target_quota_dzd': None,
@@ -5220,7 +5545,7 @@ class UnifiedAccountsMonitoringAPIView(APIView):
                     'new_balance_dzd': running_gaming,
                     'description': tx.description or tx.transaction_type or 'Transfer / Operational Refill',
                     'operation_code': tx.operation_code or 'POSTAL_OP',
-                    'quota_tag': 'Gaming (G2Bulk)' if abs(amt) > 1000 else 'eSIM Refill',
+                    'quota_tag': 'Gaming (Digital Services Account ( g2bulk ))' if abs(amt) > 1000 else 'eSIM Refill',
                     'timestamp': tx.transaction_date.strftime('%Y-%m-%d %H:%M'),
                     'is_fallback': not has_gaming_txs,
                 })
@@ -5325,7 +5650,7 @@ class UnifiedAccountsMonitoringAPIView(APIView):
             'gaming': {
                 'id': 'subsystem_gaming',
                 'title': 'Gaming Wholesale Subsystem',
-                'badge': 'G2Bulk + Withdrawals',
+                'badge': 'Digital Services Account ( g2bulk ) + Withdrawals',
                 'target_quota_dzd': gaming_target_val,
                 'allocated_balance_dzd': gaming_as_of,
                 'coverage_pct': gaming_cov,
@@ -5364,7 +5689,7 @@ class UnifiedAccountsMonitoringAPIView(APIView):
             'gaming': {
                 'id': 'partition_gaming',
                 'owner': 'gaming',
-                'title': 'gaming Operational Account (Gaming & eSIM)',
+                'title': 'Digital Services Operational Account (Gaming & eSIM)',
                 'badge': 'Gaming + eSIM',
                 'account_number': '00799999001738866535',
                 'ccp_number': '0017388665',
@@ -7397,6 +7722,8 @@ class XLMLiquidityStatusAPIView(APIView):
             except Exception:
                 source_cycle_ids = [int(x.strip()) for x in source_cycle_ids.split(',') if x.strip().isdigit()]
 
+        allow_duplicate = request.data.get('allow_duplicate') in [True, 'true', '1']
+
         try:
             res = XLMProcurementService.initiate_cycle(
                 amount_dzd=amount_dzd,
@@ -7405,6 +7732,7 @@ class XLMLiquidityStatusAPIView(APIView):
                 executed_by=request.user if request.user.is_authenticated else None,
                 notes=notes,
                 source_cycle_ids=source_cycle_ids,
+                allow_duplicate=allow_duplicate,
             )
             return Response(res, status=status.HTTP_201_CREATED)
 
@@ -7422,11 +7750,31 @@ class XLMCycleStageAdvanceAPIView(APIView):
 
     def post(self, request):
         from .services.xlm_procurement_service import XLMProcurementService
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+
         cycle_id = request.data.get('cycle_id')
         target_stage = request.data.get('target_stage')
 
         if not cycle_id:
             return Response({'success': False, 'error': 'cycle_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Resolve acting operator user
+        acting_user = request.user if (request.user and request.user.is_authenticated) else None
+        op_name = (
+            request.data.get('operator_name')
+            or request.headers.get('X-Operator-Name')
+            or ''
+        ).strip()
+        clean_op = op_name.lstrip('@').split('@')[0].strip()
+
+        if not acting_user and clean_op:
+            acting_user = User.objects.filter(
+                models.Q(username__iexact=clean_op) | models.Q(first_name__iexact=clean_op)
+            ).first()
+
+        if not acting_user:
+            acting_user = User.objects.filter(is_superuser=True).first() or User.objects.first()
 
         try:
             if target_stage in ['STAGE_2_CONVERT', '2', 2]:
@@ -7436,7 +7784,8 @@ class XLMCycleStageAdvanceAPIView(APIView):
                     usdt_acquired=request.data.get('usdt_acquired', 0),
                     p2p_rate_dzd=request.data.get('p2p_rate_dzd', 0),
                     p2p_platform=request.data.get('p2p_platform', 'BINANCE'),
-                    notes=request.data.get('notes', '')
+                    notes=request.data.get('notes', ''),
+                    executed_by=acting_user,
                 )
             elif target_stage in ['STAGE_3_WITHDRAW', '3', 3]:
                 res = XLMProcurementService.advance_to_withdraw(
@@ -7444,7 +7793,9 @@ class XLMCycleStageAdvanceAPIView(APIView):
                     xlm_acquired=request.data.get('xlm_acquired', 0),
                     convert_rate_usdt=request.data.get('convert_rate_usdt', 0),
                     convert_fee_usdt=request.data.get('convert_fee_usdt', 0),
-                    notes=request.data.get('notes', '')
+                    convert_order_id=request.data.get('convert_order_id', ''),
+                    notes=request.data.get('notes', ''),
+                    executed_by=acting_user,
                 )
             else:
                 return Response({'success': False, 'error': f'Invalid target stage: {target_stage}'}, status=status.HTTP_400_BAD_REQUEST)
@@ -7463,6 +7814,9 @@ class XLMCycleVerifyOnChainAPIView(APIView):
 
     def post(self, request):
         from .services.xlm_procurement_service import XLMProcurementService
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+
         cycle_id = request.data.get('cycle_id')
         stellar_tx_hash = request.data.get('stellar_tx_hash')
         binance_withdrawal_id = request.data.get('binance_withdrawal_id')
@@ -7471,12 +7825,30 @@ class XLMCycleVerifyOnChainAPIView(APIView):
         if not cycle_id:
             return Response({'success': False, 'error': 'cycle_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Resolve acting operator user
+        acting_user = request.user if (request.user and request.user.is_authenticated) else None
+        op_name = (
+            request.data.get('operator_name')
+            or request.headers.get('X-Operator-Name')
+            or ''
+        ).strip()
+        clean_op = op_name.lstrip('@').split('@')[0].strip()
+
+        if not acting_user and clean_op:
+            acting_user = User.objects.filter(
+                models.Q(username__iexact=clean_op) | models.Q(first_name__iexact=clean_op)
+            ).first()
+
+        if not acting_user:
+            acting_user = User.objects.filter(is_superuser=True).first() or User.objects.first()
+
         try:
             res = XLMProcurementService.verify_and_complete_on_chain(
                 cycle_id=cycle_id,
                 stellar_tx_hash=stellar_tx_hash,
                 binance_withdrawal_id=binance_withdrawal_id,
                 network_fee_xlm=network_fee_xlm,
+                executed_by=acting_user,
             )
             status_code = status.HTTP_200_OK if res.get('success') else status.HTTP_400_BAD_REQUEST
             return Response(res, status=status_code)

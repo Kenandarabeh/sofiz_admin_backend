@@ -153,7 +153,7 @@ def custom_get_app_list(self, request, app_label=None):
 
     # 4. 🎮 GAME OPERATIONS & MONITORING (Gaming & Top-Ups)
     game_app = {
-        'name': '🎮 GAME OPERATIONS & MONITORING (Free Fire, PUBG, G2Bulk)',
+        'name': '🎮 GAME OPERATIONS & MONITORING (Free Fire, PUBG, Digital Services Account ( g2bulk ))',
         'app_label': 'game_operations',
         'app_url': monitoring_app_url,
         'has_module_perms': True,
@@ -328,7 +328,7 @@ class MonitoringGlobalSettingsForm(forms.ModelForm):
     g2bulk_api_key = forms.CharField(
         widget=forms.PasswordInput(render_value=True, attrs={'style': 'font-family: monospace; width: 450px;'}),
         required=False,
-        label="G2Bulk API Key"
+        label="Digital Services Account ( g2bulk ) API Key"
     )
     baridimob_secret_token = forms.CharField(
         widget=forms.PasswordInput(render_value=True, attrs={'style': 'font-family: monospace; width: 450px;'}),
@@ -377,7 +377,7 @@ class MonitoringGlobalSettingsAdmin(admin.ModelAdmin):
         ('Binance P2P & Crypto Gateway', {
             'fields': ('binance_api_key', 'binance_api_secret', 'binance_merchant_id')
         }),
-        ('G2Bulk Wholesale Supplier API & Safety Threshold', {
+        ('Digital Services Account ( g2bulk ) Wholesale Supplier API & Safety Threshold', {
             'fields': ('g2bulk_base_url', 'g2bulk_api_key', 'g2bulk_min_threshold_usd')
         }),
         ('BaridiMob API Credentials', {
@@ -781,13 +781,13 @@ class SupplierAccountAdmin(InstitutionalAuditAdminMixin, admin.ModelAdmin):
             settings.g2bulk_min_threshold_usd = obj.min_balance_threshold_usd
             settings.save(update_fields=['g2bulk_min_threshold_usd'])
 
-    @admin.action(description="Sync Live G2Bulk Balance via Official API")
+    @admin.action(description="Sync Live Digital Services Account ( g2bulk ) Balance via Official API")
     def sync_g2bulk_balance_action(self, request, queryset):
         res = G2BulkService.sync_supplier()
         if res.get('success'):
-            self.message_user(request, f"G2Bulk Live Balance Synced: ${res.get('balance_usd'):,.2f} USD ({res.get('balance_dzd'):,.2f} DZT)")
+            self.message_user(request, f"Digital Services Account ( g2bulk ) Live Balance Synced: ${res.get('balance_usd'):,.2f} USD ({res.get('balance_dzd'):,.2f} DZT)")
         else:
-            self.message_user(request, f"G2Bulk Sync Error: {res.get('error')}", level='ERROR')
+            self.message_user(request, f"Digital Services Account ( g2bulk ) Sync Error: {res.get('error')}", level='ERROR')
 
 
 @admin.register(G2BulkReplenishmentWindow)
@@ -926,10 +926,10 @@ class GamingWithdrawalRecordAdmin(InstitutionalAuditAdminMixin, admin.ModelAdmin
         updated = queryset.filter(stage=WithdrawalStage.ALLOCATED).update(stage=WithdrawalStage.BINANCE_P2P, updated_at=timezone.now())
         self.message_user(request, f"Advanced {updated} withdrawal(s) to Stage 2: Binance P2P Acquired.")
 
-    @admin.action(description="✅ Advance Stage to 3: G2Bulk Confirmed & Closed")
+    @admin.action(description="✅ Advance Stage to 3: Digital Services Account ( g2bulk ) Confirmed & Closed")
     def advance_to_completed_action(self, request, queryset):
         updated = queryset.exclude(stage=WithdrawalStage.COMPLETED).update(stage=WithdrawalStage.COMPLETED, updated_at=timezone.now())
-        self.message_user(request, f"Advanced {updated} withdrawal(s) to Stage 3: Completed & Closed.")
+        self.message_user(request, f"Advanced {updated} withdrawal(s) to Stage 3: Digital Services Account ( g2bulk ) Confirmed & Closed.")
 
     @admin.action(description="🔍 Run Binance Verification Check")
     def verify_binance_action(self, request, queryset):
@@ -1150,7 +1150,6 @@ class BaridiMobFundingReceiptAdmin(InstitutionalAuditAdminMixin, admin.ModelAdmi
         'reference',
         'receipt_preview_link',
         'formatted_amount_dzd',
-        'formatted_fee',
         'status_badge',
         'recipient_rip',
         'responsible_person',
@@ -1172,16 +1171,11 @@ class BaridiMobFundingReceiptAdmin(InstitutionalAuditAdminMixin, admin.ModelAdmi
         return format_html('<span style="font-family: monospace; font-weight: bold; color: #0284c7;">{} DZD</span>', f"{amt:,.2f}")
     formatted_amount_dzd.short_description = "Receipt Amount"
 
-    def formatted_fee(self, obj):
-        val = obj.fee_dzd or Decimal("0.00")
-        return format_html('<span style="font-family: monospace; color: #dc2626;">{} DZD</span>', f"{val:,.2f}")
-    formatted_fee.short_description = "Fee"
-
     def status_badge(self, obj):
         colors = {
             'PENDING_P2P': ('#854d0e', '#fef08a', '1. Pending P2P'),
             'USDT_ACQUIRED': ('#1e3a8a', '#93c5fd', '2. USDT Acquired'),
-            'G2BULK_CONFIRMED': ('#166534', '#86efac', '3. G2Bulk Confirmed'),
+            'G2BULK_CONFIRMED': ('#166534', '#86efac', '3. Digital Services Account ( g2bulk ) Confirmed'),
         }
         bg, text, label = colors.get(obj.status, ('#475569', '#ffffff', obj.status))
         return format_html('<span style="background: {}; color: {}; padding: 3px 8px; border-radius: 6px; font-weight: bold; font-size: 11px;">{}</span>', bg, text, label)

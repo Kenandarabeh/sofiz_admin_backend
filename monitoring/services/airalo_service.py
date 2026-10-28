@@ -82,7 +82,7 @@ class AiraloService:
         client_id, client_secret, base_url = cls.get_credentials()
         account, _ = AiraloAccount.objects.get_or_create(
             id=1,
-            defaults={"account_name": "Official Airalo Partner Account"}
+            defaults={"account_name": "Official eSIM Partner Account"}
         )
 
         if not client_id or not client_secret:
@@ -126,7 +126,7 @@ class AiraloService:
 
         account, _ = AiraloAccount.objects.get_or_create(
             id=1,
-            defaults={"account_name": "Official Airalo Partner Account"}
+            defaults={"account_name": "Official eSIM Partner Account"}
         )
         if current_balance > Decimal("0.00") or not account.available_balance_usd:
             account.available_balance_usd = current_balance

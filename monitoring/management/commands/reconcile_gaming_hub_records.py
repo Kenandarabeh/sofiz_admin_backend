@@ -79,7 +79,7 @@ class Command(BaseCommand):
         postal_rip = postal_account.rip_number if postal_account else "00799999001738866535"
 
         self.stdout.write(f"Source Postal Account: {postal_account.account_name if postal_account else 'General Pool'}")
-        self.stdout.write(f"Postal Card Available Balance: {postal_balance:,.2f} DZD (RIP: {postal_rip})\n")
+        self.stdout.write(f"BaridiMob Available Balance: {postal_balance:,.2f} DZD (RIP: {postal_rip})\n")
 
         total_to_inject = inject_capital + target_buffer
         if total_to_inject <= 0:

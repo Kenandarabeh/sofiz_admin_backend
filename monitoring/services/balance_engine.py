@@ -177,7 +177,7 @@ class BalanceEngine:
                 notes_parts.append(f"Critical Alert: Asset deficit of {abs(discrepancy):,.2f} DZT (possible fund leakage, unrecorded expense, or failed order).")
 
         if in_transit_sum > 0:
-            notes_parts.append(f"In-Transit Pipeline: {in_transit_sum:,.2f} DZD currently active across P2P / G2Bulk replenishment workflow.")
+            notes_parts.append(f"In-Transit Pipeline: {in_transit_sum:,.2f} DZD currently active across P2P / Digital Services Account ( g2bulk ) replenishment workflow.")
 
         if glitched_accounts:
             for g_acc in glitched_accounts:
@@ -896,7 +896,7 @@ class BalanceEngine:
 
         return {
             'account_id': gaming_acc.id if gaming_acc else None,
-            'account_name': "Gaming Operational Account",
+            'account_name': "Digital Services Operational Account",
             'rip_number': gaming_acc.rip_number if gaming_acc else "00799999001738866535",
             'account_email': gaming_acc.account_email if gaming_acc else "game",
             'real_balance_dzd': float(real_balance),

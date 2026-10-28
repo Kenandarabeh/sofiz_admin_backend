@@ -99,7 +99,7 @@ class Migration(migrations.Migration):
             ],
             options={
                 'verbose_name': 'Gaming Withdrawal / Supplier Funding',
-                'verbose_name_plural': 'Gaming Withdrawals & Supplier Funding (G2Bulk)',
+                'verbose_name_plural': 'Digital Services Withdrawals & Supplier Funding (G2Bulk)',
                 'proxy': True,
                 'indexes': [],
                 'constraints': [],

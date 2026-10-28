@@ -374,6 +374,10 @@ class WithdrawalRecordSerializer(serializers.ModelSerializer):
             'receipt_amount_dzd',
             'receipt_verified',
             'notes',
+            'created_by',
+            'operator_name',
+            'created_by_user',
+            'last_operator_user',
             'created_at',
             'updated_at',
         ]
@@ -448,7 +452,6 @@ class BaridiMobFundingReceiptSerializer(serializers.ModelSerializer):
             'reference',
             'file_hash',
             'amount_dzd',
-            'fee_dzd',
             'recipient_rip',
             'responsible_person',
             'source_wallet',
@@ -480,7 +483,6 @@ class BaridiMobFundingReceiptSerializer(serializers.ModelSerializer):
             'reference',
             'file_hash',
             'amount_dzd',
-            'fee_dzd',
             'recipient_rip',
             'stellar_tx_hash',
             'expense_record',
@@ -533,7 +535,6 @@ class ReceiptUploadSerializer(serializers.Serializer):
     reference = serializers.CharField(required=False, allow_blank=True)
     amount_dzd = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, allow_null=True)
     recipient_rip = serializers.CharField(required=False, allow_blank=True)
-    fee_dzd = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, default=Decimal("50.00"))
     receipt_date = serializers.DateField(required=False, allow_null=True)
     responsible_person = serializers.CharField(required=False, default="P2P Purchasing Officer", allow_blank=True)
     notes = serializers.CharField(required=False, allow_blank=True, default="")
